@@ -47,8 +47,8 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
         case .openApp: return "Open an application"
         case .openURL: return "Open a URL"
         case .sendKey: return "Send a keyboard shortcut"
-        case .setVariable: return "Set a Breadboard variable"
-        case .toggleVariable: return "Toggle a Breadboard variable (true/false)"
+        case .setVariable: return "Set an Anvil variable"
+        case .toggleVariable: return "Toggle an Anvil variable (true/false)"
         case .incrementVariable: return "Increment a numeric variable"
         case .setNotification: return "Show a macOS notification"
         case .openFile: return "Open a file or folder"
@@ -177,7 +177,7 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
 
 // MARK: - Menu Bar Item
 
-/// A single item in the Breadboard menu bar menu.
+/// A single item in the Anvil menu bar menu.
 /// Can be a simple action item, a separator, or a submenu with children.
 struct MenuBarItem: Identifiable, Equatable, Codable {
     var id = UUID()
@@ -265,16 +265,16 @@ extension MenuBarItem {
     static func defaults() -> [MenuBarItem] {
         [
             MenuBarItem(
-                name: "Open Breadboard",
+                name: "Open Anvil",
                 icon: "keyboard",
                 isEnabled: true,
                 leftClickAction: MenuBarItemAction(
                     kind: .runShell,
-                    shellCommand: "open -a Breadboard"
+                    shellCommand: "open -a Anvil"
                 ),
                 rightClickAction: MenuBarItemAction(
                     kind: .setNotification,
-                    notificationMessage: "Breadboard is running"
+                    notificationMessage: "Anvil is running"
                 )
             ),
             MenuBarItem(

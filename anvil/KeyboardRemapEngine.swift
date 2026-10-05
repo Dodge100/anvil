@@ -1943,7 +1943,7 @@ final class KeyboardRemapEngine {
     // MARK: - Pixel color condition
 
     /// Background task queue for pixel capture so the event tap never blocks.
-    private let pixelCaptureQueue = DispatchQueue(label: "com.breadboard.pixel-capture", qos: .utility)
+    private let pixelCaptureQueue = DispatchQueue(label: "com.anvil.pixel-capture", qos: .utility)
 
     /// Pixel capture is dispatched async and the result is cached. The first evaluation
     /// for a given coordinate may return stale data; the cache is refreshed on a background timer.

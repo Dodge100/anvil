@@ -551,7 +551,7 @@ private struct MenuBarItemEditorPane: View {
                     .frame(maxWidth: 80)
             }
         case .setNotification:
-            TextField("Message", text: action.notificationMessage, prompt: Text("Hello from Breadboard!"), axis: .vertical)
+            TextField("Message", text: action.notificationMessage, prompt: Text("Hello from Anvil!"), axis: .vertical)
                 .textFieldStyle(.roundedBorder)
         case .openFile:
             TextField("File path", text: action.filePath, prompt: Text("~/Documents"))

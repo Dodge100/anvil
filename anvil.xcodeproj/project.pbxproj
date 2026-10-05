@@ -139,11 +139,11 @@
 			<key>isa</key>
 			<string>PBXNativeTarget</string>
 			<key>name</key>
-			<string>breadboard</string>
+			<string>anvil</string>
 			<key>packageProductDependencies</key>
 			<array/>
 			<key>productName</key>
-			<string>breadboard</string>
+			<string>anvil</string>
 			<key>productReference</key>
 			<string>BB04A80E2FB5696500CC209D</string>
 			<key>productType</key>
@@ -158,7 +158,7 @@
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>path</key>
-			<string>breadboard.app</string>
+			<string>anvil.app</string>
 			<key>sourceTree</key>
 			<string>BUILT_PRODUCTS_DIR</string>
 		</dict>
@@ -180,7 +180,7 @@
 			<key>isa</key>
 			<string>PBXFileSystemSynchronizedRootGroup</string>
 			<key>path</key>
-			<string>breadboard</string>
+			<string>anvil</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -461,7 +461,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.dodge1.breadboard</string>
+				<string>com.dodge1.anvil</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>REGISTER_APP_GROUPS</key>
@@ -518,7 +518,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.dodge1.breadboard</string>
+				<string>com.dodge1.anvil</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>REGISTER_APP_GROUPS</key>

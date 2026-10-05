@@ -1,7 +1,7 @@
 import Foundation
 
 struct DaemonManager {
-    static let label = "com.breadboard.daemon"
+    static let label = "com.anvil.daemon"
 
     static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser

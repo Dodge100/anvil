@@ -1,9 +1,9 @@
 import AppKit
 
-struct BreadboardDaemon {
+struct AnvilDaemon {
     static func run() {
         // NSApp is nil until the shared NSApplication is explicitly initialized.
-        // The daemon bypasses SwiftUI's app lifecycle (no breadboardApp.main()), so
+        // The daemon bypasses SwiftUI's app lifecycle (no AnvilApp.main()), so
         // we must create it here before touching NSApp / NSApplication.shared.
         NSApplication.shared.setActivationPolicy(.prohibited)
 

@@ -5,14 +5,14 @@ import UniformTypeIdentifiers
 // MARK: - UTType
 
 extension UTType {
-    /// The breadboard manipulator file format: a single `Manipulator` encoded as JSON.
-    static var breadboardManipulator: UTType {
-        UTType(exportedAs: "com.breadboard.manipulator", conformingTo: .json)
+    /// The anvil manipulator file format: a single `Manipulator` encoded as JSON.
+    static var anvilManipulator: UTType {
+        UTType(exportedAs: "com.anvil.manipulator", conformingTo: .json)
     }
 
-    /// The breadboard menu bar item file format: a single `MenuBarItem` encoded as JSON.
-    static var breadboardMenuBarItem: UTType {
-        UTType(exportedAs: "com.breadboard.menubaritem", conformingTo: .json)
+    /// The anvil menu bar item file format: a single `MenuBarItem` encoded as JSON.
+    static var anvilMenuBarItem: UTType {
+        UTType(exportedAs: "com.anvil.menubaritem", conformingTo: .json)
     }
 }
 
@@ -20,7 +20,7 @@ extension UTType {
 
 enum ManipulatorFile {
     /// The file extension for exported manipulator files (no leading dot).
-    static let fileExtension = "breadboardmanipulator"
+    static let fileExtension = "anvilmanipulator"
 
     // MARK: Export
 
@@ -44,7 +44,7 @@ enum ManipulatorFile {
         let panel = NSSavePanel()
         panel.title = "Export Manipulator"
         panel.nameFieldStringValue = sanitizedFilename(for: manipulator.name)
-        panel.allowedContentTypes = [.breadboardManipulator]
+        panel.allowedContentTypes = [.anvilManipulator]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
 
@@ -76,7 +76,7 @@ enum ManipulatorFile {
     static func importSingle() -> Manipulator? {
         let panel = NSOpenPanel()
         panel.title = "Import Manipulator"
-        panel.allowedContentTypes = [.breadboardManipulator]
+        panel.allowedContentTypes = [.anvilManipulator]
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -107,7 +107,7 @@ enum ManipulatorFile {
 
 enum MenuBarItemFile {
     /// The file extension for exported menu bar item files (no leading dot).
-    static let fileExtension = "breadboardmenubaritem"
+    static let fileExtension = "anvilmenubaritem"
 
     // MARK: Export
 
@@ -131,7 +131,7 @@ enum MenuBarItemFile {
         let panel = NSSavePanel()
         panel.title = "Export Menu Bar Item"
         panel.nameFieldStringValue = sanitizedFilename(for: item.name)
-        panel.allowedContentTypes = [.breadboardMenuBarItem]
+        panel.allowedContentTypes = [.anvilMenuBarItem]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
 
@@ -163,7 +163,7 @@ enum MenuBarItemFile {
     static func importSingle() -> MenuBarItem? {
         let panel = NSOpenPanel()
         panel.title = "Import Menu Bar Item"
-        panel.allowedContentTypes = [.breadboardMenuBarItem]
+        panel.allowedContentTypes = [.anvilMenuBarItem]
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -192,7 +192,7 @@ enum MenuBarItemFile {
 
 // MARK: - Drag-and-Drop support
 
-/// A drop delegate that imports `.breadboardmanipulator` files into the store.
+/// A drop delegate that imports `.anvilmanipulator` files into the store.
 struct ManipulatorDropDelegate: DropDelegate {
     let store: RemapStore
 

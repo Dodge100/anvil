@@ -146,7 +146,7 @@ final class RemapStore: ObservableObject {
 
     static let appSupportURL: URL = {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return url.appendingPathComponent("Breadboard")
+        return url.appendingPathComponent("Anvil")
     }()
 
     static let configURL: URL = appSupportURL.appendingPathComponent("config.json")
@@ -2277,7 +2277,7 @@ final class RemapStore: ObservableObject {
         center.requestAuthorization(options: [.alert, .sound]) { [center] granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
-            content.title = "Breadboard"
+            content.title = "Anvil"
             content.body = message
             content.sound = nil
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -2349,7 +2349,7 @@ final class RemapStore: ObservableObject {
 
     private static func runAppleScript(_ source: String) -> String {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("breadboard_\\(UUID().uuidString).applescript")
+            .appendingPathComponent("anvil_\\(UUID().uuidString).applescript")
         do {
             try source.write(to: tmp, atomically: true, encoding: .utf8)
         } catch { return "" }
@@ -2676,7 +2676,7 @@ extension Manipulator {
                 trigger: ManipulatorTrigger(steps: [KeyShortcut(mandatoryModifiers: [.control, .option, .command], key: "n")]),
                 actions: [Action(
                     kind: .setNotification,
-                    notificationMessage: "Breadboard: Notification action works!"
+                    notificationMessage: "Anvil: Notification action works!"
                 )]
             ),
 
@@ -3345,7 +3345,7 @@ extension Manipulator {
                 trigger: ManipulatorTrigger(
                     steps: [KeyShortcut(mandatoryModifiers: [.control, .option], key: "s")]
                 ),
-                actions: [Action(kind: .speakText, text: "Breadboard automation engine is working")]
+                actions: [Action(kind: .speakText, text: "Anvil automation engine is working")]
             ),
 
             // ================================================================

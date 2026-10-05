@@ -1,4 +1,4 @@
-# Breadboard / KeyCommand — macOS Productivity Suite
+# Anvil / KeyCommand — macOS Productivity Suite
 
 ## 2. Part One: Keyboard Remappings
 
@@ -8,25 +8,25 @@
 
 | Feature | Status | Description | Source |
 |---------|--------|-------------|--------|
-| `key_code` trigger | ✅ | Match specific keyboard keys by string ID (e.g., `"space"`, `"a"`, `"left_arrow"`) | Breadboard |
-| `consumer_key_code` trigger | ✅ | Match media/consumer keys (volume, brightness, play/pause, eject, power) — 13 types | Breadboard |
-| `pointing_button` trigger | ✅ | Match mouse buttons (left, right, middle, back, forward, center) | Breadboard |
-| `any` key trigger | ✅ | Wildcard: matches ANY keyboard keypress | Breadboard |
-| Modifier key as trigger | ✅ | A modifier key itself as the trigger (caps_lock → escape, right ⌘ → …); dispatched from flagsChanged events | Breadboard |
-| Mandatory modifiers | ✅ | Must-have modifiers (command, shift, option, control, capsLock, fn) for trigger | Breadboard |
-| Optional modifiers | ✅ | Modifiers that may be present but aren't required | Breadboard |
-| Left/right modifier discrimination | ✅ | Separate tracking for left_command vs right_command, etc. | Breadboard |
-| Caps Lock tracking | ✅ | Explicit `capsLockActive` state and `maskAlphaShift` flag matching | Breadboard |
-| Fn key tracking | ✅ | `fnPressed` boolean tracked separately (fn has no CGEventFlag) | Breadboard |
-| Simultaneous chord trigger | ✅ | Match 2+ keys pressed together within threshold | Breadboard |
-| Simultaneous strict order | ✅ | `key_down_order`: insensitive, strict, strictInverse | Breadboard |
-| Simultaneous up order | ✅ | `key_up_order`: insensitive, strict, strictInverse | Breadboard |
-| Simultaneous up-when | ✅ | `key_up_when`: any (first key up) or all (last key up) | Breadboard |
-| Simultaneous `to_after_key_up` | ✅ | Actions that fire when chord keys are released | Breadboard |
-| Simultaneous detect key down uninterruptedly | ✅ | Option to require uninterrupted key-down detection | Breadboard |
-| Sequence trigger (multi-step) | ✅ | Sequential keypress match (a → b → c) with configurable timeout | Breadboard |
-| Sequence timeout | ✅ | Configurable via `simultaneousThresholdMilliseconds` (default 1500ms) | Breadboard |
-| Triggers with no steps | ✅ | Valid for `any` key and `mouseMotionToScroll` types | Breadboard |
+| `key_code` trigger | ✅ | Match specific keyboard keys by string ID (e.g., `"space"`, `"a"`, `"left_arrow"`) | Anvil |
+| `consumer_key_code` trigger | ✅ | Match media/consumer keys (volume, brightness, play/pause, eject, power) — 13 types | Anvil |
+| `pointing_button` trigger | ✅ | Match mouse buttons (left, right, middle, back, forward, center) | Anvil |
+| `any` key trigger | ✅ | Wildcard: matches ANY keyboard keypress | Anvil |
+| Modifier key as trigger | ✅ | A modifier key itself as the trigger (caps_lock → escape, right ⌘ → …); dispatched from flagsChanged events | Anvil |
+| Mandatory modifiers | ✅ | Must-have modifiers (command, shift, option, control, capsLock, fn) for trigger | Anvil |
+| Optional modifiers | ✅ | Modifiers that may be present but aren't required | Anvil |
+| Left/right modifier discrimination | ✅ | Separate tracking for left_command vs right_command, etc. | Anvil |
+| Caps Lock tracking | ✅ | Explicit `capsLockActive` state and `maskAlphaShift` flag matching | Anvil |
+| Fn key tracking | ✅ | `fnPressed` boolean tracked separately (fn has no CGEventFlag) | Anvil |
+| Simultaneous chord trigger | ✅ | Match 2+ keys pressed together within threshold | Anvil |
+| Simultaneous strict order | ✅ | `key_down_order`: insensitive, strict, strictInverse | Anvil |
+| Simultaneous up order | ✅ | `key_up_order`: insensitive, strict, strictInverse | Anvil |
+| Simultaneous up-when | ✅ | `key_up_when`: any (first key up) or all (last key up) | Anvil |
+| Simultaneous `to_after_key_up` | ✅ | Actions that fire when chord keys are released | Anvil |
+| Simultaneous detect key down uninterruptedly | ✅ | Option to require uninterrupted key-down detection | Anvil |
+| Sequence trigger (multi-step) | ✅ | Sequential keypress match (a → b → c) with configurable timeout | Anvil |
+| Sequence timeout | ✅ | Configurable via `simultaneousThresholdMilliseconds` (default 1500ms) | Anvil |
+| Triggers with no steps | ✅ | Valid for `any` key and `mouseMotionToScroll` types | Anvil |
 | `to_if_other_key_pressed` trigger | ✅ | Fire actions when another key is pressed while trigger is held | Karabiner |
 | Typed String trigger | ✅ | Match a typed string sequence (e.g., "teh" → "the") | Keyboard Maestro |
 | Typed String options | ✅ | Trigger on prefix, on full match, or immediately on any match | Keyboard Maestro |
@@ -38,15 +38,15 @@
 
 | Feature | Status | Description | Source |
 |---------|--------|-------------|--------|
-| `frontmostApplication` | ✅ | Match active app by bundle ID (e.g., `com.apple.Safari`) — cached, invalidated on app change | Breadboard |
-| `frontmostAppName` | ✅ | Match active app by display name (e.g., `Safari`) — cached, invalidated on app change | Breadboard |
-| `inputSource` | ✅ | Match current keyboard input source by ID — cached, invalidated on change | Breadboard |
-| `device` | ✅ | Match by `"built-in"`, `"external"`, or numeric product ID | Breadboard |
-| `variable` | ✅ | Match engine variable by name (set via `Set Variable`/`Toggle Variable` actions) | Breadboard |
-| `keyboardType` | ✅ | Match keyboard layout: `ansi`, `iso`, `jis` | Breadboard |
-| `deviceExists` | ✅ | Check if a device is connected (`"built-in"`, `"external"`, or product ID) | Breadboard |
-| `expression` | ✅ | Evaluate `variable_name == "value"` or `variable_name != "value"` expressions | Breadboard |
-| `eventChanged` | ✅ | Check if event changed due to `keyboard_type` or `device` switch | Breadboard |
+| `frontmostApplication` | ✅ | Match active app by bundle ID (e.g., `com.apple.Safari`) — cached, invalidated on app change | Anvil |
+| `frontmostAppName` | ✅ | Match active app by display name (e.g., `Safari`) — cached, invalidated on app change | Anvil |
+| `inputSource` | ✅ | Match current keyboard input source by ID — cached, invalidated on change | Anvil |
+| `device` | ✅ | Match by `"built-in"`, `"external"`, or numeric product ID | Anvil |
+| `variable` | ✅ | Match engine variable by name (set via `Set Variable`/`Toggle Variable` actions) | Anvil |
+| `keyboardType` | ✅ | Match keyboard layout: `ansi`, `iso`, `jis` | Anvil |
+| `deviceExists` | ✅ | Check if a device is connected (`"built-in"`, `"external"`, or product ID) | Anvil |
+| `expression` | ✅ | Evaluate `variable_name == "value"` or `variable_name != "value"` expressions | Anvil |
+| `eventChanged` | ✅ | Check if event changed due to `keyboard_type` or `device` switch | Anvil |
 | Per-action conditions | ✅ | `to.conditions` — conditions applied to individual actions within a manipulator | Karabiner |
 
 **Comparison operators**: `is` (equals), `is not` (not equals), `contains`, `matches` (regex)
@@ -67,28 +67,28 @@
 
 | # | Action Kind | Status | Description | Source |
 |---|-------------|--------|-------------|--------|
-| 1 | `sendKey` | ✅ | Press a single key with modifiers | Breadboard |
-| 2 | `sendText` | ✅ | Type a string of text (up to 64 UTF-16 code units) | Breadboard |
-| 3 | `setVariable` | ✅ | Save a value to a named engine variable | Breadboard |
-| 4 | `unsetVariable` | ✅ | Remove a named variable | Breadboard |
-| 5 | `toggleVariable` | ✅ | Flip a variable between `"true"` and `"false"` | Breadboard |
-| 6 | `runShell` | ✅ | Execute a shell command (`/bin/sh -c`) | Breadboard |
-| 7 | `openApp` | ✅ | Launch an application (by bundle ID or display name) | Breadboard |
-| 8 | `openURL` | ✅ | Open a URL via `NSWorkspace.shared.open()` | Breadboard |
-| 9 | `runShortcut` | ✅ | Run a macOS Shortcut via AppleScript bridge | Breadboard |
-| 10 | `runAppleScript` | ✅ | Execute an AppleScript snippet | Breadboard |
-| 11 | `delay` | ✅ | Wait before executing the next step | Breadboard |
-| 12 | `disable` | ✅ | Swallow the keypress entirely — do not pass to system | Breadboard |
-| 13 | `consumerKey` | ✅ | Send a media/consumer key event (play, pause, volume, brightness, etc.) | Breadboard |
-| 14 | `pointingButton` | ✅ | Send a mouse button click (left, right, middle, back, forward) | Breadboard |
-| 15 | `mouseKey` | ✅ | Move mouse cursor or send scroll wheel events | Breadboard |
-| 16 | `stickyModifier` | ✅ | Toggle a modifier key as sticky (latching behavior) | Breadboard |
-| 17 | `halt` | ✅ | Stop processing further actions in the manipulator | Breadboard |
-| 18 | `holdDown` | ✅ | Press a key and hold it for a specified duration | Breadboard |
-| 19 | `selectInputSource` | ✅ | Switch keyboard input source | Breadboard |
-| 20 | `setNotification` | ✅ | Show an on-screen macOS notification | Breadboard |
-| 21 | `fromEvent` | ✅ | Mirror/pass through the original trigger event | Breadboard |
-| 22 | `softwareFunction` | ✅ | Execute a system-level function (doubleClick/sleepSystem/setCursorPosition) | Breadboard |
+| 1 | `sendKey` | ✅ | Press a single key with modifiers | Anvil |
+| 2 | `sendText` | ✅ | Type a string of text (up to 64 UTF-16 code units) | Anvil |
+| 3 | `setVariable` | ✅ | Save a value to a named engine variable | Anvil |
+| 4 | `unsetVariable` | ✅ | Remove a named variable | Anvil |
+| 5 | `toggleVariable` | ✅ | Flip a variable between `"true"` and `"false"` | Anvil |
+| 6 | `runShell` | ✅ | Execute a shell command (`/bin/sh -c`) | Anvil |
+| 7 | `openApp` | ✅ | Launch an application (by bundle ID or display name) | Anvil |
+| 8 | `openURL` | ✅ | Open a URL via `NSWorkspace.shared.open()` | Anvil |
+| 9 | `runShortcut` | ✅ | Run a macOS Shortcut via AppleScript bridge | Anvil |
+| 10 | `runAppleScript` | ✅ | Execute an AppleScript snippet | Anvil |
+| 11 | `delay` | ✅ | Wait before executing the next step | Anvil |
+| 12 | `disable` | ✅ | Swallow the keypress entirely — do not pass to system | Anvil |
+| 13 | `consumerKey` | ✅ | Send a media/consumer key event (play, pause, volume, brightness, etc.) | Anvil |
+| 14 | `pointingButton` | ✅ | Send a mouse button click (left, right, middle, back, forward) | Anvil |
+| 15 | `mouseKey` | ✅ | Move mouse cursor or send scroll wheel events | Anvil |
+| 16 | `stickyModifier` | ✅ | Toggle a modifier key as sticky (latching behavior) | Anvil |
+| 17 | `halt` | ✅ | Stop processing further actions in the manipulator | Anvil |
+| 18 | `holdDown` | ✅ | Press a key and hold it for a specified duration | Anvil |
+| 19 | `selectInputSource` | ✅ | Switch keyboard input source | Anvil |
+| 20 | `setNotification` | ✅ | Show an on-screen macOS notification | Anvil |
+| 21 | `fromEvent` | ✅ | Mirror/pass through the original trigger event | Anvil |
+| 22 | `softwareFunction` | ✅ | Execute a system-level function (doubleClick/sleepSystem/setCursorPosition) | Anvil |
 | 23 | `setMouseCursorPosition` | 🔄 | Set mouse cursor position to absolute coordinates | Karabiner |
 | 24 | `openApplication` | 🔄 | Open application via software function | Karabiner |
 | 25 | `sendUserCommand` | 🔄 | Send a user-defined command | Karabiner |
@@ -97,12 +97,12 @@
 
 | Fire Mode | Status | Description | Source |
 |-----------|--------|-------------|--------|
-| `onKeyDown` | ✅ | Fires immediately when the trigger key is pressed | Breadboard |
-| `ifAlone` | ✅ | Fires only if the trigger key is released within `to_if_alone_timeout` | Breadboard |
-| `ifHeldDown` | ✅ | Fires once the key has been held longer than `to_if_held_down_threshold` | Breadboard |
-| `ifHeldDownInvoked` | ✅ | Fires after `to_delayed_action_delay` if key is still held uninterrupted | Breadboard |
-| `ifHeldDownCanceled` | ✅ | Fires if another key is pressed before the delay elapses | Breadboard |
-| `afterKeyUp` | ✅ | Fires when the trigger key is released | Breadboard |
+| `onKeyDown` | ✅ | Fires immediately when the trigger key is pressed | Anvil |
+| `ifAlone` | ✅ | Fires only if the trigger key is released within `to_if_alone_timeout` | Anvil |
+| `ifHeldDown` | ✅ | Fires once the key has been held longer than `to_if_held_down_threshold` | Anvil |
+| `ifHeldDownInvoked` | ✅ | Fires after `to_delayed_action_delay` if key is still held uninterrupted | Anvil |
+| `ifHeldDownCanceled` | ✅ | Fires if another key is pressed before the delay elapses | Anvil |
+| `afterKeyUp` | ✅ | Fires when the trigger key is released | Anvil |
 | `ifOtherKeyPressed` | ✅ | Fire actions when another key is pressed while trigger is held | Karabiner |
 
 **Timing parameters**: `to_if_alone_timeout` (1000ms), `to_if_held_down_threshold` (500ms), `to_delayed_action_delay` (0ms), `simultaneous_threshold` (1500ms)
@@ -111,9 +111,9 @@
 
 | Type | Status | Description | Source |
 |------|--------|-------------|--------|
-| `basic` | ✅ | Standard keyboard remapping (default) | Breadboard |
-| `mouseBasic` | ✅ | Mouse button remapping — intercepts mouse clicks | Breadboard |
-| `mouseMotionToScroll` | ✅ | Converts mouse movement into scroll events (swap cursor → scroll) | Breadboard |
+| `basic` | ✅ | Standard keyboard remapping (default) | Anvil |
+| `mouseBasic` | ✅ | Mouse button remapping — intercepts mouse clicks | Anvil |
+| `mouseMotionToScroll` | ✅ | Converts mouse movement into scroll events (swap cursor → scroll) | Anvil |
 
 ### 2.6 Manipulator Parameters
 
@@ -163,7 +163,7 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `openApp` | ✅ | Launch an application | Breadboard |
+| `openApp` | ✅ | Launch an application | Anvil |
 | `activateApp` | ✅ | Bring an application to foreground | Keyboard Cowboy |
 | `hideApp` | ✅ | Hide a specific application | Keyboard Cowboy |
 | `unhideApp` | ✅ | Unhide a hidden application | Keyboard Cowboy |
@@ -234,7 +234,7 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `sleepSystem` | ✅ | Put the Mac to sleep | Breadboard |
+| `sleepSystem` | ✅ | Put the Mac to sleep | Anvil |
 | `restartSystem` | ✅ | Restart the Mac | Keyboard Maestro |
 | `shutdownSystem` | ✅ | Shut down the Mac | Keyboard Maestro |
 | `logOut` | ✅ | Log out the current user | Keyboard Maestro |
@@ -243,7 +243,7 @@
 | `showDesktop` | ✅ | Show desktop / minimize all windows | Keyboard Cowboy |
 | `missionControl` | ✅ | Activate Mission Control | Keyboard Cowboy |
 | `applicationWindows` | ❌ | Show application windows in Mission Control | Keyboard Cowboy |
-| `showNotification` | ✅ | Show a macOS notification | Breadboard |
+| `showNotification` | ✅ | Show a macOS notification | Anvil |
 | `setVolume` | ✅ | Set system volume (0-100) | Keyboard Maestro |
 | `getVolume` | ❌ | Get current system volume | — |
 | `muteSystem` | ✅ | Mute/unmute system audio | Keyboard Maestro |
@@ -263,7 +263,7 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `sendText` | ✅ | Type a string of text (up to 64 UTF-16 code units) | Breadboard |
+| `sendText` | ✅ | Type a string of text (up to 64 UTF-16 code units) | Anvil |
 | `insertTextByTyping` | ❌ | Type text character by character | Keyboard Maestro |
 | `insertTextByPasting` | ❌ | Paste text from clipboard | Keyboard Maestro |
 | `getSelectedText` | ✅ | Get selected text from frontmost app via Accessibility API | — |
@@ -336,7 +336,7 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `openURL` | ✅ | Open a URL | Breadboard |
+| `openURL` | ✅ | Open a URL | Anvil |
 | `openURLInBrowser` | ❌ | Open URL in specific browser | — |
 | `openURLInPrivateWindow` | ❌ | Open URL in private/incognito window | — |
 | `downloadURL` | ❌ | Download a URL to a file | Keyboard Maestro |
@@ -356,8 +356,8 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `runShell` | ✅ | Execute a shell command (`/bin/sh -c`) | Breadboard |
-| `runAppleScript` | ✅ | Execute an AppleScript snippet | Breadboard |
+| `runShell` | ✅ | Execute a shell command (`/bin/sh -c`) | Anvil |
+| `runAppleScript` | ✅ | Execute an AppleScript snippet | Anvil |
 | `runJavaScript` | ❌ | Execute JavaScript for Automation (JXA) | — |
 | `runShellScript` | ❌ | Execute shell script with chosen interpreter | Keyboard Maestro |
 | `runShellWithResult` | ❌ | Execute shell command and capture stdout | — |
@@ -367,11 +367,11 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `sendKey` | ✅ | Press a key combo | Breadboard |
-| `consumerKey` | ✅ | Send media key | Breadboard |
-| `pointingButton` | ✅ | Send mouse click | Breadboard |
-| `mouseKey` | ✅ | Move mouse / scroll | Breadboard |
-| `holdDown` | ✅ | Hold a key for duration | Breadboard |
+| `sendKey` | ✅ | Press a key combo | Anvil |
+| `consumerKey` | ✅ | Send media key | Anvil |
+| `pointingButton` | ✅ | Send mouse click | Anvil |
+| `mouseKey` | ✅ | Move mouse / scroll | Anvil |
+| `holdDown` | ✅ | Hold a key for duration | Anvil |
 | `typeKeystroke` | ❌ | Type a keystroke with optional modifiers | Keyboard Maestro |
 | `typeString` | ❌ | Type a string with configurable speed (typing/instant) | Keyboard Cowboy |
 | `moveOrClickMouse` | ❌ | Move mouse to coordinates and/or click | Keyboard Maestro |
@@ -384,9 +384,9 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `setVariable` | ✅ | Set a variable value | Breadboard |
-| `unsetVariable` | ✅ | Remove a variable | Breadboard |
-| `toggleVariable` | ✅ | Toggle a boolean variable | Breadboard |
+| `setVariable` | ✅ | Set a variable value | Anvil |
+| `unsetVariable` | ✅ | Remove a variable | Anvil |
+| `toggleVariable` | ✅ | Toggle a boolean variable | Anvil |
 | `incrementVariable` | ✅ | Increment a numeric variable | Keyboard Maestro |
 | `decrementVariable` | ✅ | Decrement a numeric variable | Keyboard Maestro |
 | `setGlobalVariable` | ✅ | Set a persistent global variable (survives restarts) | Keyboard Maestro |
@@ -401,9 +401,9 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `halt` | ✅ | Stop processing further actions | Breadboard |
-| `delay` | ✅ | Pause before next action | Breadboard |
-| `disable` | ✅ | Swallow the event | Breadboard |
+| `halt` | ✅ | Stop processing further actions | Anvil |
+| `delay` | ✅ | Pause before next action | Anvil |
+| `disable` | ✅ | Swallow the event | Anvil |
 | `ifThenElse` | ❌ | Conditional branching with then/else | Keyboard Maestro |
 | `whileLoop` | ❌ | Loop while condition is true | Keyboard Maestro |
 | `repeatNTimes` | ❌ | Repeat actions N times | Keyboard Maestro |
@@ -438,7 +438,7 @@
 
 | Action | Status | Description | Source |
 |--------|--------|-------------|--------|
-| `showNotification` | ✅ | Show a notification (title, subtitle, message) | Breadboard |
+| `showNotification` | ✅ | Show a notification (title, subtitle, message) | Anvil |
 | `sendEmail` | ❌ | Send an email | — |
 | `sendiMessage` | ❌ | Send an iMessage | — |
 | `playSound` | ✅ | Play a sound file | Keyboard Maestro |
@@ -627,16 +627,16 @@
 | Action binding | ❌ | Bind HTML element clicks/events to automation engine actions |
 | CSS themes | ❌ | Pre-built CSS themes for widgets (dark, light, transparent, etc.) |
 | JavaScript API | ❌ | JS API to interact with the automation engine from within the widget |
-| `Breadboard.getVariable(name)` | ❌ | JS function to read an engine variable |
-| `Breadboard.setVariable(name, value)` | ❌ | JS function to set an engine variable |
-| `Breadboard.runAction(action)` | ❌ | JS function to execute an automation action |
-| `Breadboard.runShortcut(name)` | ❌ | JS function to run a shortcut |
-| `Breadboard.onVariableChange(name, callback)` | ❌ | JS callback when a variable changes |
-| `Breadboard.showNotification(message)` | ❌ | JS function to show a notification |
-| `Breadboard.getClipboard()` | ❌ | JS function to read clipboard |
-| `Breadboard.setClipboard(text)` | ❌ | JS function to set clipboard |
+| `Anvil.getVariable(name)` | ❌ | JS function to read an engine variable |
+| `Anvil.setVariable(name, value)` | ❌ | JS function to set an engine variable |
+| `Anvil.runAction(action)` | ❌ | JS function to execute an automation action |
+| `Anvil.runShortcut(name)` | ❌ | JS function to run a shortcut |
+| `Anvil.onVariableChange(name, callback)` | ❌ | JS callback when a variable changes |
+| `Anvil.showNotification(message)` | ❌ | JS function to show a notification |
+| `Anvil.getClipboard()` | ❌ | JS function to read clipboard |
+| `Anvil.setClipboard(text)` | ❌ | JS function to set clipboard |
 | Import HTML file | ❌ | Import an external HTML file as a widget |
-| Export widget | ❌ | Export a widget as a shareable `.breadboard-widget` file |
+| Export widget | ❌ | Export a widget as a shareable `.anvil-widget` file |
 | Widget store | ❌ | Community widget marketplace |
 | Widget iframe sandboxing | ❌ | Each widget runs in an isolated iframe for security |
 | Widget local storage | ❌ | Persistent storage for widget state via localStorage |
@@ -665,7 +665,7 @@
 
 ## 5. Part Four: Shortcuts & AppleScript Integration
 
-> Expose the automation engine to Apple's Shortcuts app via native App Intents and to other macOS apps via an AppleScript dictionary, allowing Breadboard to be controlled from Shortcuts, Automator, Script Editor, and any other app that supports AppleScript.
+> Expose the automation engine to Apple's Shortcuts app via native App Intents and to other macOS apps via an AppleScript dictionary, allowing Anvil to be controlled from Shortcuts, Automator, Script Editor, and any other app that supports AppleScript.
 
 ### 5.1 Current Implementation
 
@@ -680,12 +680,12 @@
 - ❌ **Fragile AppleScript bridge**: Relies on process execution (`osascript`), not native Shortcuts API
 - ❌ **Synchronous execution**: Blocks on AppleScript completion (dispatched to background queue)
 - ❌ **No input/output passing**: Can run shortcuts but cannot pass input or receive output
-- ❌ **No Shortcuts action provider**: Breadboard cannot expose actions TO the Shortcuts app
-- ❌ **No Shortcuts trigger source**: Breadboard events cannot trigger Shortcuts automations
-- ❌ **No two-way integration**: Shortcuts cannot read or modify Breadboard state
+- ❌ **No Shortcuts action provider**: Anvil cannot expose actions TO the Shortcuts app
+- ❌ **No Shortcuts trigger source**: Anvil events cannot trigger Shortcuts automations
+- ❌ **No two-way integration**: Shortcuts cannot read or modify Anvil state
 - ❌ **No AppleScript dictionary**: No scripting interface for external app integration
 
-### 5.3 Breadboard as a Shortcuts Action Provider
+### 5.3 Anvil as a Shortcuts Action Provider
 
 #### Remap Engine Intents
 
@@ -759,10 +759,10 @@
 | `HttpRequest` | ❌ | `url`, `method`, `headers`, `body` | `response` | Make HTTP request |
 | `RunShellCommand` | ❌ | `command` | `output` | Execute shell command |
 | `RunAppleScript` | ❌ | `script` | `result` | Execute AppleScript |
-| `ShowBreadboardNotification` | ❌ | `title`, `message` | — | Show a notification |
+| `ShowAnvilNotification` | ❌ | `title`, `message` | — | Show a notification |
 | `TriggerMenuBarItem` | ❌ | `itemName` | — | Click a menu bar item |
 
-### 5.4 Breadboard as a Shortcuts Trigger Source
+### 5.4 Anvil as a Shortcuts Trigger Source
 
 | Trigger | Status | Parameters | Description |
 |---------|--------|-----------|-------------|
@@ -779,7 +779,7 @@
 
 ### 5.5 AppleScript Dictionary
 
-> Expose Breadboard's automation engine as an AppleScript scripting addition so other apps (Automator, Script Editor, FastScripts, hammerspoon, etc.) can programmatically control Breadboard.
+> Expose Anvil's automation engine as an AppleScript scripting addition so other apps (Automator, Script Editor, FastScripts, hammerspoon, etc.) can programmatically control Anvil.
 
 #### Engine Control
 
@@ -842,13 +842,13 @@
 
 ```applescript
 -- Toggle dark mode
-tell application "Breadboard"
+tell application "Anvil"
     set currentMode to getVariable "darkMode"
     if currentMode is "true" then setVariable "darkMode" to "false" else setVariable "darkMode" to "true"
 end tell
 
 -- Launch app only if not running
-tell application "Breadboard"
+tell application "Anvil"
     set runningApps to getRunningApps
     set appRunning to false
     repeat with appInfo in runningApps
@@ -858,13 +858,13 @@ tell application "Breadboard"
 end tell
 
 -- Run a shell command and notify
-tell application "Breadboard"
+tell application "Anvil"
     set gitStatus to runShell "git status --short"
     if gitStatus is not "" then showNotification "Git repo has changes"
 end tell
 
 -- Conditional action based on variable state
-tell application "Breadboard"
+tell application "Anvil"
     set workMode to getVariable "workMode"
     if workMode is "true" then
         openApp "com.apple.dt.Xcode"
@@ -889,7 +889,7 @@ end tell
 
 | Aspect | Status | Description |
 |--------|--------|-------------|
-| Scripting bridge definition (`.sdef`) | ❌ | Define the dictionary in `Breadboard.sdef` |
+| Scripting bridge definition (`.sdef`) | ❌ | Define the dictionary in `Anvil.sdef` |
 | `NSAppleScript` handler support | ❌ | Implement `handleAppleScript:` in `NSApplicationDelegate` |
 | Return value serialization | ❌ | Convert Swift types to `NSAppleEventDescriptor` |
 | Error handling | ❌ | Return `NSError` with codes for invalid parameters |
@@ -979,7 +979,7 @@ The app ships with **50 test manipulators** demonstrating:
 | 3 | Drag and drop manipulator reordering | Remap | S | ❌ |
 | 4 | Export/import individual manipulators | Remap | S | 🔄 |
 | 5 | Undo/redo for manipulator edits | Remap | M | ❌ |
-| 6 | `breadboard://` URL scheme | Shortcuts | S | ❌ |
+| 6 | `anvil://` URL scheme | Shortcuts | S | ❌ |
 | 7 | AppleScript dictionary (`.sdef` + `handleAppleScript:`) | Shortcuts | M | ❌ |
 
 ### P1 (Soon): Important for Usability

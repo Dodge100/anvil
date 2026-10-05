@@ -132,7 +132,7 @@ final class StatusBarController: NSObject {
         }
 
         menu.addItem(.separator())
-        menu.addItem(makePlainItem(title: "Show Breadboard", action: #selector(showBreadboard)))
+        menu.addItem(makePlainItem(title: "Show Anvil", action: #selector(showAnvil)))
         menu.addItem(.separator())
         menu.addItem(makePlainItem(title: "Quit", action: #selector(quitApp), key: "q"))
         return menu
@@ -179,7 +179,7 @@ final class StatusBarController: NSObject {
     private func ensureFallback() {
         guard fallbackID == nil else { return }
         let menu = NSMenu()
-        menu.addItem(makePlainItem(title: "Show Breadboard", action: #selector(showBreadboard)))
+        menu.addItem(makePlainItem(title: "Show Anvil", action: #selector(showAnvil)))
         menu.addItem(.separator())
         menu.addItem(makePlainItem(title: "Quit", action: #selector(quitApp), key: "q"))
         let id = UUID()
@@ -225,7 +225,7 @@ final class StatusBarController: NSObject {
         return nil
     }
 
-    @objc private func showBreadboard() {
+    @objc private func showAnvil() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first { $0.identifier?.rawValue == "main" }?.makeKeyAndOrderFront(nil)
     }
@@ -245,7 +245,7 @@ private func placeholderMenu() -> NSMenu {
 
 // MARK: - App
 
-struct breadboardApp: App {
+struct AnvilApp: App {
     @StateObject private var store = RemapStore()
 
     init() {

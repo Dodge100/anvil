@@ -1,7 +1,7 @@
 import SwiftUI
 
 if CommandLine.arguments.contains("--daemon") {
-    BreadboardDaemon.run()
+    AnvilDaemon.run()
 } else {
-    breadboardApp.main()
+    AnvilApp.main()
 }
