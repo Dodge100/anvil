@@ -1,135 +1,39 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Anvil</title>
-  <meta name="description" content="Remap your keyboard, build workflows, and automate your Mac. Anvil is a keyboard remapping tool for macOS.">
-  <link rel="stylesheet" href="styles.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyline</title>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<header class="toolbar">
+  <h1 class="toolbar__title">Skyline</h1>
+  <div class="toolbar__picker" role="group" aria-label="Scene theme">
+    <button data-theme="live" data-active aria-pressed="true">Auto</button>
+    <button data-theme="cycle" aria-pressed="false">Cycle</button>
+    <button data-theme="sunrise" aria-pressed="false">Sunrise</button>
+    <button data-theme="day" aria-pressed="false">Day</button>
+    <button data-theme="sunset" aria-pressed="false">Sunset</button>
+    <button data-theme="night" aria-pressed="false">Night</button>
+  </div>
+</header>
 
-  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
-    <symbol id="arrow" viewBox="0 0 10 10"><path d="M1 5h8M6 1l3 4-3 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="arrow-lg" viewBox="0 0 14 14"><path d="M1 7h12M8 2l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-  </svg>
-
-  <nav class="nav">
-    <div class="wrap">
-      <a href="#" class="nav-logo">
-        Anvil
-      </a>
-      <ul class="nav-links">
-        <li><a href="#features">Features</a></li>
-        <li><a href="#automation">Automation</a></li>
-        <li><a href="#help">Help</a></li>
-        <li><a href="#download" class="cta-link">Download</a></li>
-      </ul>
+<main>
+  <div class="landscape" id="landscape" role="img" aria-label="Layered city skyline at the current time of day">
+    <div class="landscape__stars" id="stars" aria-hidden="true"></div>
+    <div class="landscape__sunWrap" id="sunWrap" aria-hidden="true">
+      <div class="landscape__orb landscape__orb--sun" id="sun"></div>
+      <div class="landscape__orb landscape__orb--moon" id="moon"></div>
     </div>
-  </nav>
-
-  <section class="hero">
-    <div class="wrap">
-      <div class="hero-icon">
-        <svg viewBox="0 0 64 64" fill="none">
-          <path d="M16 24h8v3h-8v-3zm0 6h8v3h-8v-3zm10-6h8v3h-8v-3zm0 6h8v3h-8v-3zm10-6h8v3h-8v-3zm0 6h8v3h-8v-3zM20 36h24v3H20v-3z" fill="white" opacity="0.9"/>
-        </svg>
-      </div>
-      <h1>Anvil</h1>
-      <p class="hero-sub">Remap your keys. Build workflows. Automate your Mac. Anvil is a keyboard remapping tool for macOS.</p>
-      <div class="hero-links">
-        <a href="#download" class="link-lg">
-          Download
-          <svg aria-hidden="true"><use href="#arrow-lg"/></svg>
-        </a>
-      </div>
-    </div>
+    <div class="landscape__svg" id="svgHost" aria-hidden="true">
+</div>
+  </div>
+  <section class="content">
+    <p>Auto syncs the skyline to your local time. Cycle loops through a full day every 60 seconds.</p>
   </section>
+</main>
 
-  <section class="divided">
-    <div class="wrap">
-      <div class="wn-row">
-        <div class="wn-text">
-          <h2>New in Anvil</h2>
-          <p>The new visual Workflow Builder creates automation chains. Connect triggers, conditions, and actions with a drag-and-drop interface. Import and export individual manipulators. Use multiple config profiles. Connect with Apple Shortcuts.</p>
-          <a href="#" class="lnk">
-            Learn more
-            <svg aria-hidden="true"><use href="#arrow"/></svg>
-          </a>
-        </div>
-        <div class="wn-vis"></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="divided" id="features">
-    <div class="wrap">
-      <div class="sec-hdr">
-        <h2 class="hdg">Everything your keyboard<br>was meant to do.</h2>
-        <p class="hdg-sub">Remap your keys, build workflows, and control your Mac. Everything works from one app.</p>
-      </div>
-      <div class="grid3">
-        <div class="card"><h3>System-Level Remapping</h3><p>Remap any keyboard key, modifier, or media button. It works at the system level. It works in every app.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Mouse Button Remapping</h3><p>Remap mouse buttons. Convert mouse movement into scroll events. Build custom pointing device workflows.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Visual Workflow Builder</h3><p>Build automation chains with a drag-and-drop editor. No code required.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Per-App Conditions</h3><p>Set different remaps for different apps. Use Caps Lock as Escape in every app except Vim.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Chord &amp; Sequence Triggers</h3><p>Press multiple keys at once or in sequence. Trigger actions with up to 6-key chords.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Modifier Tap Actions</h3><p>Tap a modifier for one action. Hold it for another. Caps Lock taps to Escape and holds to activate.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="divided" id="automation">
-    <div class="wrap">
-      <div class="sec-hdr">
-        <h2 class="hdg">Your Mac,<br>automated.</h2>
-        <p class="hdg-sub">Anvil is a full automation engine. Launch apps, run scripts, control windows, manage the clipboard, and connect to Apple Shortcuts.</p>
-      </div>
-      <div class="grid3">
-        <div class="card"><h3>Apple Shortcuts</h3><p>Run any Apple Shortcut from a keypress. Full integration with the Shortcuts app.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>AppleScript &amp; Shell</h3><p>Run AppleScript and shell commands from your keyboard.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Window Management</h3><p>Move, resize, minimize, maximize, and snap windows to any position on screen.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Clipboard Actions</h3><p>Read, write, append, and paste clipboard content. Named clipboard slots coming soon.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Text Transformations</h3><p>Convert text to camelCase, snake_case, kebab-case, PascalCase, and more. Encode Base64 and URLs.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>System Controls</h3><p>Sleep, restart, shut down, lock screen, control volume, toggle dark mode, and more.</p><a href="#" class="lnk">Learn more <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="divided" id="help">
-    <div class="wrap">
-      <h2 class="hdg">We are here to help.</h2>
-      <div class="grid2">
-        <div class="card"><h3>Documentation</h3><p>Read guides for every feature. They cover basic remapping and advanced workflow automation.</p><a href="#" class="lnk">Read the docs <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>GitHub</h3><p>Browse the source code, report bugs, request features, and contribute to the project.</p><a href="#" class="lnk">View repository <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Karabiner Migration</h3><p>Use Anvil with Karabiner-Elements. It reads the same config format. Import your existing remappings.</p><a href="#" class="lnk">Import config <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-        <div class="card"><h3>Community</h3><p>Share your remappings, workflows, and tips with other Anvil users.</p><a href="#" class="lnk">Join the discussion <svg aria-hidden="true"><use href="#arrow"/></svg></a></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="cta" id="download">
-    <div class="wrap">
-      <h2>Start remapping<br>today.</h2>
-      <p class="cta-sub">Free. Open source. No accounts. No subscriptions.</p>
-      <a href="https://github.com/Dodge100/anvil/releases/" class="cta-btn">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Download Anvil
-      </a>
-    </div>
-  </section>
-
-  <footer class="footer">
-    <div class="wrap">
-      <div class="footer-copy">Free and open source under AGPL</div>
-      <ul class="footer-links">
-        <li><a href="#">GitHub</a></li>
-        <li><a href="#">Documentation</a></li>
-        <li><a href="#">Privacy</a></li>
-      </ul>
-    </div>
-  </footer>
-
-
+<script src="script.js"></script>
 </body>
 </html>
