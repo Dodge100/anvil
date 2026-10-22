@@ -3,35 +3,181 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Skyline</title>
+<title>Anvil - Forge your own tools</title>
+<meta name="description" content="Anvil is a customisation and daemon app for macOS. Themes, tweaks and background daemons in one native app.">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="toolbar">
-  <h1 class="toolbar__title">Skyline</h1>
-  <div class="toolbar__picker" role="group" aria-label="Scene theme">
-    <button data-theme="live" data-active aria-pressed="true">Auto</button>
-    <button data-theme="cycle" aria-pressed="false">Cycle</button>
-    <button data-theme="sunrise" aria-pressed="false">Sunrise</button>
-    <button data-theme="day" aria-pressed="false">Day</button>
-    <button data-theme="sunset" aria-pressed="false">Sunset</button>
-    <button data-theme="night" aria-pressed="false">Night</button>
-  </div>
-</header>
+
+<!-- Screenshot slots: drop an <img src="assets/…"> inside a .shot to go live.
+     Files: shot-1..3.jpg (showcase), daemon-1..3.jpg (menu bar), post-1..3.jpg (palletes). -->
+
+<div class="theme-float theme-picker" role="group" aria-label="Scene theme">
+  <button data-theme="live" data-active aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg><span>Auto</span></button>
+  <button data-theme="cycle" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.6h-2.6"/></svg><span>Cycle</span></button>
+  <button data-theme="sunrise" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5h11"/><path d="M5 12.5a3 3 0 0 1 6 0"/><path d="M8 6.5V3.5M6.5 5 8 3.5 9.5 5"/></svg><span>Rise</span></button>
+  <button data-theme="day" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1"/></svg><span>Day</span></button>
+  <button data-theme="sunset" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5h11"/><path d="M5 12.5a3 3 0 0 1 6 0"/><path d="M8 3.5v3M6.5 5 8 6.5 9.5 5"/></svg><span>Set</span></button>
+  <button data-theme="night" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 9.2A5 5 0 1 1 6.8 3.2a4 4 0 0 0 6 6z"/></svg><span>Night</span></button>
+</div>
 
 <main>
+
   <div class="landscape" id="landscape" role="img" aria-label="Layered city skyline at the current time of day">
     <div class="landscape__stars" id="stars" aria-hidden="true"></div>
     <div class="landscape__sunWrap" id="sunWrap" aria-hidden="true">
       <div class="landscape__orb landscape__orb--sun" id="sun"></div>
       <div class="landscape__orb landscape__orb--moon" id="moon"></div>
     </div>
-    <div class="landscape__svg" id="svgHost" aria-hidden="true">
-</div>
+    <div class="landscape__svg" id="svgHost" aria-hidden="true"></div>
   </div>
-  <section class="content">
-    <p>Auto syncs the skyline to your local time. Cycle loops through a full day every 60 seconds.</p>
+
+  <svg class="divider__defs" aria-hidden="true">
+    <defs>
+      <g id="bb-l1" transform="translate(0,105)">
+        <path d="M-20 -19.5H16.9V321.2H-20ZM1042.9 -11.5H1079.9V304.2H1042.9ZM1025.5 112.3H1062.5V174.1H1025.5ZM1022.7 214.8H1053.9V323.7H1022.7ZM599 264.8H1033.2V309.4H599ZM-9.5 104.4H33.8V163H-9.5ZM-4.3 265.2H70.9V325.7H-4.3ZM4.7 235.1H39.7V295H4.7ZM473.3 265.8H525V308H473.3ZM606.3 236.7H646.1V306.8H606.3ZM585 259.3H618.9V288H585ZM628.1 247.6H662V276.3H628.1ZM501 244.3H534.9V291.4H501ZM61 279.1H1008.1V309.5H61ZM91.2 214.5H117V289.7H91.2ZM68.5 246.7H94.3V282.7H68.5ZM267.7 237.9H333.1V287.2H267.7ZM298 192.7H310.1V279.6H298ZM280 192.7H292.1V279.6H280ZM108 234.9H133.8V270.9H108ZM110.9 254.6H304.2V290.6H110.9ZM810.9 246.5H840.6V285H810.9ZM699.8 245.8H729.5V284.3H699.8ZM725.5 227.5H755.2V266H725.5ZM782.4 219H815.3V298.7H782.4ZM949.3 190.2H978.5V273H949.3ZM879.9 234.4H951V297.6H879.9ZM372.9 218.1H414.2V285H372.9ZM410.7 258.1H438.8V297.5H410.7ZM189.9 240.5H219.6V279H189.9ZM166.4 230H196.1V268.5H166.4Z" />
+      </g>
+    </defs>
+  </svg>
+
+  <section class="section" id="forge">
+    <h2 class="h2">Forge your Tools</h2>
+    <p class="lede">different parts of the app interact with different systems on your computer</p>
+    <div class="cards3">
+      <article class="card card--notch">
+        <p class="card__index">1</p>
+        <h3>customize your keyboard</h3>
+        <p>create context aware shortcuts with support for modal configurations like vim</p>
+      </article>
+      <article class="card card--rail">
+        <p class="card__index">2</p>
+        <h3>build a menu bar</h3>
+        <p>build custom menu bar items with unique icons, submenus, and actions</p>
+      </article>
+      <article class="card card--slant">
+        <p class="card__index">3</p>
+        <h3>more coming soon!</h3>
+        <p>everything is open source, so feel free to make a pr if you want something added!</p>
+      </article>
+    </div>
   </section>
+
+  <div class="divider divider--1" aria-hidden="true"><svg class="divider__svg" viewBox="40 269 580 145" preserveAspectRatio="xMidYMax slice"><use href="#bb-l1"/></svg></div>
+
+  <section class="section" id="showcase">
+    <h2 class="h2">keyboard modification</h2>
+    <div class="cards3">
+      <article class="card card--shot card--bevel">
+        <figure class="shot" aria-label="Screenshot placeholder 1">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <div class="card__body">
+          <p class="card__kicker">triggers</p>
+          <h3>custom triggers with sequences</h3>
+          <p>assign multiple shortcuts to one action or add sequences of key presses too!</p>
+        </div>
+      </article>
+      <article class="card card--shot card--frame">
+        <figure class="shot" aria-label="Screenshot placeholder 2">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <div class="card__body">
+          <p class="card__kicker">conditions</p>
+          <h3>use current context as a condition</h3>
+          <p>create custom variables or use the time of day or frontmost app to dictate which action you actually trigger</p>
+        </div>
+      </article>
+      <article class="card card--shot card--bevel card--flip">
+        <figure class="shot" aria-label="Screenshot placeholder 3">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <div class="card__body">
+          <p class="card__kicker">actions</p>
+          <h3>build your own custom action</h3>
+          <p>run shortcuts, make custom macros, of whatever you want!</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <div class="divider divider--2 divider--flip" aria-hidden="true"><svg class="divider__svg" viewBox="180 269 560 145" preserveAspectRatio="xMidYMax slice"><use href="#bb-l1"/></svg></div>
+
+  <section class="section" id="daemons">
+    <h2 class="h2">menu bar</h2>
+    <p class="lede">create custom menu bar items with submenus to open websites, run shortcuts, or even trigger actions</p>
+    <div class="hl">
+      <figure class="shot hl__thumb hl__thumb--edge" aria-label="Screenshot placeholder 4">
+        <div class="shot__ph" aria-hidden="true"></div>
+      </figure>
+      <div class="hl__body">
+        <h3 class="mono">choose an icon</h3>
+        <p>choose an icon from apple's own toolkit, allowing the new items you create to fit in seemlessly. or create a seperator to add a blank space between menu bar items</p>
+      </div>
+    </div>
+    <div class="hl hl--flip">
+      <figure class="shot hl__thumb hl__thumb--notch" aria-label="Screenshot placeholder 5">
+        <div class="shot__ph" aria-hidden="true"></div>
+      </figure>
+      <div class="hl__body">
+        <h3 class="mono">build the menu</h3>
+        <p>add items to the submenu or if you have a lot, add more nested submenus! add different actions for both right and left click for further customization.</p>
+      </div>
+    </div>
+    <div class="hl">
+      <figure class="shot hl__thumb hl__thumb--frame" aria-label="Screenshot placeholder 6">
+        <div class="shot__ph" aria-hidden="true"></div>
+      </figure>
+      <div class="hl__body">
+        <h3 class="mono">add actions</h3>
+        <p>run shortcuts, shell commands, applescript, open apps, change variable values and more. support for the actions system coming soon!</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider divider--3" aria-hidden="true"><svg class="divider__svg" viewBox="320 269 600 145" preserveAspectRatio="xMidYMax slice"><use href="#bb-l1"/></svg></div>
+
+  <section class="section" id="transmissions">
+    <h2 class="h2">Palletes</h2>
+    <p class="lede">create custom command palletes full of custom actions</p>
+    <div class="cards3">
+      <article class="card card--shot card--tab">
+        <p class="card__tab">spotlight</p>
+        <figure class="shot" aria-label="Screenshot placeholder 7">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <h3>create your own alternative</h3>
+        <p>build your own raycast or alfred alternatives with greater control over the available actions! setup a specific pallete for just files or another one for command macros!</p>
+      </article>
+      <article class="card card--shot card--tab">
+        <p class="card__tab">shelf</p>
+        <figure class="shot" aria-label="Screenshot placeholder 8">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <h3>floating customisable windows</h3>
+        <p>make floating windows to store your files or commonly used shortcuts</p>
+      </article>
+      <article class="card card--shot card--tab">
+        <p class="card__tab">ring</p>
+        <figure class="shot" aria-label="Screenshot placeholder 9">
+          <div class="shot__ph" aria-hidden="true"></div>
+        </figure>
+        <h3>Sed do eiusmod tempor</h3>
+        <p>create ring style palletes to rebind mouse buttons to allowing you to open custom menus</p>
+      </article>
+    </div>
+  </section>
+
+  <div class="divider divider--4 divider--flip" aria-hidden="true"><svg class="divider__svg" viewBox="260 269 600 145" preserveAspectRatio="xMidYMax slice"><use href="#bb-l1"/></svg></div>
+
+  <section class="section" id="join">
+    <h2 class="h2">try it out!</h2>
+    <p class="release-cta">
+      <a class="btn btn--primary" href="https://github.com/Dodge100/anvil/releases/latest">Download latest release</a>
+      <a class="btn btn--ghost" href="https://github.com/Dodge100/anvil/releases">All releases</a>
+    </p>
+  </section>
+
+  <div class="divider divider--5 divider--flip" aria-hidden="true"><svg class="divider__svg" viewBox="0 269 560 145" preserveAspectRatio="xMidYMax slice"><use href="#bb-l1"/></svg></div>
 </main>
 
 <script src="script.js"></script>
