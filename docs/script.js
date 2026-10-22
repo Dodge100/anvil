@@ -1,3 +1,11 @@
+/* ============================================================
+   ANVIL — skyline site behaviour
+   ------------------------------------------------------------
+   The hero colours are written as custom properties on :root, so
+   the whole page follows the sky. script.js owns those properties;
+   styles.css only reads them.
+   ============================================================ */
+
 const config = {
   anims: {
     live: {
@@ -15,6 +23,8 @@ const config = {
       },
     },
   },
+  // Keyframes of the day. Every colour is interpolated between the
+  // two states that surround the current time.
   states: [
     { at: 0, name: "night", colours: {
       sky1: "#060a1a", sky2: "#141d3a", sun: "#e8e6df",
@@ -45,27 +55,7 @@ const config = {
 
 const root = document.documentElement;
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-let animMode = localStorage.getItem("skyline-theme") || "live";
-if (!["live", "cycle", "sunrise", "day", "sunset", "night"].includes(animMode)) animMode = "live";
-
-config.states.push({ ...config.states[0], name: "end", at: 24 });
-
-let animation;
-let layerEls = [];
-const parallaxDepths = [
-  ["layer11", 0.9],
-  ["layer10", 0.8], ["layer10-lights", 0.8],
-  ["layer9", 0.7], ["layer9-lights", 0.7],
-  ["layer8", 0.6], ["layer8-lights", 0.6],
-  ["layer7", 0.5], ["layer7-lights", 0.5],
-  ["layer6", 0.4], ["layer6-lights", 0.4],
-  ["layer5", 0.3], ["layer5-lights", 0.3],
-  ["layer4", 0.2], ["layer4-lights", 0.2],
-  ["layer3", 0.15], ["layer3-lights", 0.15],
-  ["layer2", 0.08], ["layer2-lights", 0.08],
-  ["layer1", 0], ["layer1-lights", 0],
-];
-let scrollPos = 0;
+const THEMES = ["live", "cycle", "sunrise", "day", "sunset", "night"];
 
 // Window lights: white by day, warm yellow at night. No fading — each
 // window flips at its own random time inside the sunset/sunrise windows.
@@ -73,7 +63,35 @@ const LIGHTS_ON = "#ffd166";
 const LIGHTS_OFF = "#ffffff";
 const SUNSET_START = 17, SUNSET_END = 19;
 const SUNRISE_START = 5, SUNRISE_END = 8;
+
+let animMode = localStorage.getItem("skyline-theme") || "live";
+if (!THEMES.includes(animMode)) animMode = "live";
+
+// Closes the day at 24h so the last state can interpolate into the first.
+config.states.push({ ...config.states[0], name: "end", at: 24 });
+
+let animation;
+let layerEls = [];
 let lightEls = [];
+let scrollPos = 0;
+
+// Parallax depth per skyline layer: far layers move more than near ones.
+// Each layer has a matching group of window lights that moves with it.
+const LAYER_DEPTHS = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.15, 0.08, 0];
+const parallaxDepths = LAYER_DEPTHS.flatMap((depth, i) => {
+  const layer = `layer${LAYER_DEPTHS.length - i}`;
+  return [[layer, depth], [`${layer}-lights`, depth]];
+});
+
+/* Writing a custom property invalidates style for the whole tree, so
+   every write is cached and skipped when the value has not changed. */
+const writtenVars = new Map();
+
+function setVar(name, value) {
+  if (writtenVars.get(name) === value) return;
+  writtenVars.set(name, value);
+  root.style.setProperty(name, value);
+}
 
 function hexToRgb(hex) {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -85,8 +103,7 @@ function lerp(start, end, t) {
 }
 
 function applyColour(key, value) {
-  if (key === "starsOpacity") root.style.setProperty("--stars-opacity", value);
-  else root.style.setProperty("--" + key, value);
+  setVar(key === "starsOpacity" ? "--stars-opacity" : "--" + key, value);
 }
 
 function getProgress() {
@@ -101,9 +118,9 @@ function updateAnim() {
   const t = (progress - lastState.at) / (nextState.at - lastState.at);
 
   for (const key of Object.keys(lastState.colours)) {
-    if (key === "lights" || key === "lightsOpacity") continue;
     if (key === "starsOpacity") {
-      applyColour(key, String(lerp(parseFloat(lastState.colours[key]), parseFloat(nextState.colours[key]), t).toFixed(3)));
+      const v = lerp(parseFloat(lastState.colours[key]), parseFloat(nextState.colours[key]), t).toFixed(3);
+      applyColour(key, v);
       continue;
     }
     const a = hexToRgb(lastState.colours[key]);
@@ -111,10 +128,12 @@ function updateAnim() {
     const rgb = [0, 1, 2].map((i) => Math.round(lerp(a[i], b[i], t)));
     applyColour(key, `rgb(${rgb.join(",")})`);
   }
+
   placeOrbs(progress);
   updateLights(progress);
 }
 
+// Sun and moon share the sky: the sun crosses the day, the moon the night.
 function placeOrbs(hour) {
   const sun = document.getElementById("sun");
   const moon = document.getElementById("moon");
@@ -124,13 +143,13 @@ function placeOrbs(hour) {
   if (dayT >= 0 && dayT <= 1) {
     sun.style.display = "";
     moon.style.display = "none";
-    root.style.setProperty("--sun-h", (-Math.cos(dayT * Math.PI)).toFixed(3));
-    root.style.setProperty("--sun-v", Math.sin(dayT * Math.PI).toFixed(3));
+    setVar("--sun-h", (-Math.cos(dayT * Math.PI)).toFixed(3));
+    setVar("--sun-v", Math.sin(dayT * Math.PI).toFixed(3));
   } else {
     sun.style.display = "none";
     moon.style.display = "";
-    root.style.setProperty("--sun-h", (-Math.cos(nightT * Math.PI)).toFixed(3));
-    root.style.setProperty("--sun-v", (Math.sin(nightT * Math.PI) * 0.6).toFixed(3));
+    setVar("--sun-h", (-Math.cos(nightT * Math.PI)).toFixed(3));
+    setVar("--sun-v", (Math.sin(nightT * Math.PI) * 0.6).toFixed(3));
   }
 }
 
@@ -157,11 +176,11 @@ function endAnim() {
   clearInterval(animation);
 }
 
+// Static themes snap straight to their state instead of animating.
 function applyStatic(name) {
   const state = config.states.find((s) => s.name === name);
   if (!state) return;
   for (const [key, val] of Object.entries(state.colours)) {
-    if (key === "lights" || key === "lightsOpacity") continue;
     if (key === "starsOpacity") applyColour(key, val);
     else applyColour(key, `rgb(${hexToRgb(val).join(",")})`);
   }
@@ -186,6 +205,7 @@ function setTheme(slug) {
   }
 }
 
+// Reads the injected skyline: parallax layers and window lights.
 function setupSvg() {
   const svg = document.querySelector("#svgHost svg");
   if (!svg) return;
@@ -197,8 +217,8 @@ function setupSvg() {
       return { el, scroll, bx: m ? parseFloat(m[1]) : 0, by: m ? parseFloat(m[2]) : 0 };
     })
     .filter(Boolean);
-  root.style.setProperty("--lights-on", LIGHTS_ON);
-  root.style.setProperty("--lights-off", LIGHTS_OFF);
+  setVar("--lights-on", LIGHTS_ON);
+  setVar("--lights-off", LIGHTS_OFF);
   lightEls = [...svg.querySelectorAll('g[id$="-lights"] :is(rect, circle, path, polygon, ellipse)')]
     .map((el) => ({
       el,
@@ -213,25 +233,22 @@ function makeStars() {
   if (!box) return;
   for (let i = 0; i < 90; i++) {
     const s = document.createElement("i");
-    s.style.left = `${Math.random() * 100}%`;
-    s.style.top = `${Math.random() * 70}%`;
-    s.style.opacity = `${0.3 + Math.random() * 0.7}`;
-    const sz = Math.random() < 0.15 ? 3 : 2;
-    s.style.width = `${sz}px`;
-    s.style.height = `${sz}px`;
+    const size = Math.random() < 0.15 ? 3 : 2;
+    s.style.cssText = `left:${Math.random() * 100}%;top:${Math.random() * 70}%;` +
+      `opacity:${0.3 + Math.random() * 0.7};width:${size}px;height:${size}px`;
     box.appendChild(s);
   }
 }
 
+// One rAF loop drives the parallax; the layers shift at their own depth.
 function parallaxTick() {
   const y = window.scrollY || 0;
   if (y !== scrollPos) {
     scrollPos = y;
-    root.style.setProperty("--scrollPos", `${y}px`);
-  }
-  if (!reduceMotion) {
-    for (const { el, scroll, bx, by } of layerEls) {
-      el.style.transform = `translate(${bx.toFixed(1)}px, ${(by + scrollPos * scroll * 0.4).toFixed(1)}px)`;
+    if (!reduceMotion) {
+      for (const { el, scroll, bx, by } of layerEls) {
+        el.style.transform = `translate(${bx.toFixed(1)}px, ${(by + scrollPos * scroll * 0.4).toFixed(1)}px)`;
+      }
     }
   }
   requestAnimationFrame(parallaxTick);
@@ -243,6 +260,8 @@ document.querySelectorAll("[data-theme]").forEach((btn) => {
 
 makeStars();
 requestAnimationFrame(parallaxTick);
+
+// The skyline is fetched at runtime so the site stays a static bundle.
 fetch("assets/skyline.svg")
   .then((res) => {
     if (!res.ok) throw new Error(`skyline.svg: ${res.status}`);
