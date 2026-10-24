@@ -258,7 +258,10 @@ struct AnvilApp: App {
             ContentView(store: store)
                 .frame(minWidth: 1100, minHeight: 700)
                 .frame(idealWidth: 1280, idealHeight: 800)
-                .onAppear { StatusBarController.shared.attach(store: store) }
+                .onAppear {
+                    StatusBarController.shared.attach(store: store)
+                    CommandPaletteController.shared.attach(store: store)
+                }
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -305,6 +308,23 @@ struct AnvilApp: App {
                     set: { _ in store.toggleMacroPalette() }
                 ))
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                Divider()
+
+                Menu("Command Palettes") {
+                    let palettes = store.commandPalettes.filter { $0.isEnabled }
+                    if palettes.isEmpty {
+                        Text("No command palettes")
+                    } else {
+                        ForEach(palettes) { palette in
+                            Button {
+                                store.showCommandPalette(palette.id)
+                            } label: {
+                                Label(palette.name.isEmpty ? "Untitled" : palette.name, systemImage: palette.icon)
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -2,6 +2,32 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
+// MARK: - Lenient UUID Decoding
+
+extension KeyedDecodingContainer {
+    /// Decodes a UUID leniently: a corrupt or missing value yields a fresh UUID
+    /// instead of throwing. One bad id must never nuke an entire profile
+    /// decode — a failed profile decode makes the store fall back to defaults
+    /// and a later save overwrites the user's real data.
+    func lenientUUID(forKey key: K) -> UUID {
+        if let string = try? decodeIfPresent(String.self, forKey: key),
+           let uuid = UUID(uuidString: string) {
+            return uuid
+        }
+        return UUID()
+    }
+
+    /// Decodes a String-raw enum leniently: an unknown value yields the
+    /// fallback instead of throwing the whole profile decode.
+    func lenientEnum<E: Codable & RawRepresentable>(forKey key: K, default fallback: E) -> E where E.RawValue == String {
+        if let raw = try? decodeIfPresent(String.self, forKey: key),
+           let value = E(rawValue: raw) {
+            return value
+        }
+        return fallback
+    }
+}
+
 // MARK: - Modifier
 
 enum ModifierKey: String, CaseIterable, Identifiable, Hashable, Codable {
@@ -184,15 +210,35 @@ struct ProfilesManifest: Codable {
 }
 
 /// Per-profile data stored on disk for each profile.
-/// Each profile file contains both manipulators and menu bar items.
+/// Each profile file contains manipulators, menu bar items and command palettes.
 struct ProfileData: Codable {
     var manipulators: [Manipulator]
     var menuBarItems: [MenuBarItem]
+    var commandPalettes: [CommandPalette] = []
+
+    init(manipulators: [Manipulator], menuBarItems: [MenuBarItem], commandPalettes: [CommandPalette] = []) {
+        self.manipulators = manipulators
+        self.menuBarItems = menuBarItems
+        self.commandPalettes = commandPalettes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case manipulators, menuBarItems, commandPalettes
+    }
+
+    /// Decodes leniently so profile files written before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.manipulators = try container.decodeIfPresent([Manipulator].self, forKey: .manipulators) ?? []
+        self.menuBarItems = try container.decodeIfPresent([MenuBarItem].self, forKey: .menuBarItems) ?? []
+        self.commandPalettes = try container.decodeIfPresent([CommandPalette].self, forKey: .commandPalettes) ?? []
+    }
 
     static func `default`() -> ProfileData {
         ProfileData(
             manipulators: [],
-            menuBarItems: MenuBarItem.defaults()
+            menuBarItems: MenuBarItem.defaults(),
+            commandPalettes: CommandPalette.defaults()
         )
     }
 }
@@ -1106,7 +1152,7 @@ final class ActionStorage: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        id = container.lenientUUID(forKey: .id)
         kind = try container.decodeIfPresent(ActionKind.self, forKey: .kind) ?? .sendKey
         fireMode = try container.decodeIfPresent(ActionFireMode.self, forKey: .fireMode) ?? .onKeyDown
         toKey = try container.decodeIfPresent(String.self, forKey: .toKey) ?? ""
@@ -1868,7 +1914,7 @@ struct Manipulator: Identifiable, Hashable, Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        id = container.lenientUUID(forKey: .id)
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? "New Manipulator"
         notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
         folder = try container.decodeIfPresent(String.self, forKey: .folder) ?? ""

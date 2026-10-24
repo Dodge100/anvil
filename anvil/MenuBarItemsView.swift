@@ -374,10 +374,13 @@ private struct MenuBarItemEditorPane: View {
                                 }
 
                                 if let leftAction = item.leftClickAction, leftAction.kind != .none {
-                                    actionParameters(action: Binding(
-                                        get: { leftAction },
-                                        set: { binding.wrappedValue.leftClickAction = $0; store.saveMenuBarItems() }
-                                    ))
+                                    SimpleActionParametersEditor(
+                                        action: Binding(
+                                            get: { leftAction },
+                                            set: { binding.wrappedValue.leftClickAction = $0; store.saveMenuBarItems() }
+                                        ),
+                                        manipulators: store.manipulators
+                                    )
                                     .padding(.leading, 100)
                                 }
 
@@ -419,10 +422,13 @@ private struct MenuBarItemEditorPane: View {
                                 }
 
                                 if let rightAction = item.rightClickAction, rightAction.kind != .none {
-                                    actionParameters(action: Binding(
-                                        get: { rightAction },
-                                        set: { binding.wrappedValue.rightClickAction = $0; store.saveMenuBarItems() }
-                                    ))
+                                    SimpleActionParametersEditor(
+                                        action: Binding(
+                                            get: { rightAction },
+                                            set: { binding.wrappedValue.rightClickAction = $0; store.saveMenuBarItems() }
+                                        ),
+                                        manipulators: store.manipulators
+                                    )
                                     .padding(.leading, 100)
                                 }
                             }
@@ -486,81 +492,6 @@ private struct MenuBarItemEditorPane: View {
             }
         } message: {
             Text("This action cannot be undone.")
-        }
-    }
-
-    // MARK: - Action Parameters
-
-    @ViewBuilder
-    private func actionParameters(action: Binding<MenuBarItemAction>) -> some View {
-        switch action.wrappedValue.kind {
-        case .none:
-            EmptyView()
-        case .runShortcut:
-            TextField("Shortcut name", text: action.shortcutName, prompt: Text("e.g. Open Browser"))
-                .textFieldStyle(.roundedBorder)
-        case .runShell:
-            TextField("Command", text: action.shellCommand, prompt: Text("e.g. echo hello"), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .font(.body.monospaced())
-        case .openApp:
-            HStack(spacing: 8) {
-                TextField("Bundle ID", text: action.appBundleID, prompt: Text("com.apple.Safari"))
-                    .textFieldStyle(.roundedBorder)
-                TextField("App Name", text: action.appName, prompt: Text("Safari"))
-                    .textFieldStyle(.roundedBorder)
-            }
-        case .openURL:
-            TextField("URL", text: action.urlString, prompt: Text("https://example.com"))
-                .textFieldStyle(.roundedBorder)
-        case .sendKey:
-            HStack(spacing: 8) {
-                TextField("Key", text: action.toKey, prompt: Text("a, space, return"))
-                    .textFieldStyle(.roundedBorder)
-                HStack(spacing: 2) {
-                    ForEach(ModifierKey.flagBased, id: \.self) { mod in
-                        Toggle(mod.symbol, isOn: Binding(
-                            get: { action.wrappedValue.toModifiers.contains(mod) },
-                            set: {
-                                if $0 { action.wrappedValue.toModifiers.insert(mod) }
-                                else { action.wrappedValue.toModifiers.remove(mod) }
-                                store.saveMenuBarItems()
-                            }
-                        ))
-                        .toggleStyle(.button)
-                        .controlSize(.small)
-                    }
-                }
-            }
-        case .setVariable:
-            HStack(spacing: 8) {
-                TextField("Variable", text: action.variableName, prompt: Text("myVar"))
-                    .textFieldStyle(.roundedBorder)
-                TextField("Value", text: action.variableValue, prompt: Text("some value"))
-                    .textFieldStyle(.roundedBorder)
-            }
-        case .toggleVariable:
-            TextField("Variable", text: action.variableName, prompt: Text("myVar"))
-                .textFieldStyle(.roundedBorder)
-        case .incrementVariable:
-            HStack(spacing: 8) {
-                TextField("Variable", text: action.variableName, prompt: Text("counter"))
-                    .textFieldStyle(.roundedBorder)
-                TextField("Step", text: action.variableValue, prompt: Text("1"))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 80)
-            }
-        case .setNotification:
-            TextField("Message", text: action.notificationMessage, prompt: Text("Hello from Anvil!"), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-        case .openFile:
-            TextField("File path", text: action.filePath, prompt: Text("~/Documents"))
-                .textFieldStyle(.roundedBorder)
-        case .runAppleScript:
-            TextEditor(text: action.scriptBody)
-                .font(.caption.monospaced())
-                .frame(minHeight: 60, maxHeight: 120)
-                .border(.quaternary)
         }
     }
 }
@@ -1020,6 +951,15 @@ private struct ActionParamsView: View {
                 .font(.caption.monospaced())
                 .frame(minHeight: 60, maxHeight: 100)
                 .border(.quaternary)
+        case .runManipulator:
+            Picker("Manipulator", selection: binding(\.manipulatorID, default: "")) {
+                Text("None").tag("")
+                ForEach(store.manipulators) { manipulator in
+                    Text(manipulator.name.isEmpty ? "Untitled" : manipulator.name)
+                        .tag(manipulator.id.uuidString)
+                }
+            }
+            .labelsHidden()
         }
     }
 
@@ -1046,7 +986,7 @@ private func findChild(id: UUID, in items: [MenuBarItem]) -> MenuBarItem? {
 
 // MARK: - Icon Picker (reusable grid)
 
-private struct IconPickerGrid: View {
+struct IconPickerGrid: View {
     @Binding var icon: String
     @Environment(\.dismiss) var dismiss
 

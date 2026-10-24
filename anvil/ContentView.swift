@@ -19,12 +19,14 @@ struct ToastView: View {
 enum AppMode: String, CaseIterable, Identifiable {
     case remaps = "Remaps"
     case menuBar = "Menu Bar"
+    case commandPalette = "Command Palette"
 
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .remaps: return "keyboard"
         case .menuBar: return "menubar.rectangle"
+        case .commandPalette: return "command.square"
         }
     }
 }
@@ -42,6 +44,8 @@ struct ContentView: View {
                 RemapView(store: store)
             case .menuBar:
                 MenuBarItemsView(store: store)
+            case .commandPalette:
+                CommandPaletteView(store: store)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -64,7 +68,7 @@ struct ContentView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .help("Switch between remap editor and menu bar items")
+                .help("Switch between remap editor, menu bar items and command palettes")
             }
         }
     }
