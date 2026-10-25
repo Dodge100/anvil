@@ -1073,9 +1073,8 @@ final class RemapStore: ObservableObject {
         let child = MenuBarItem(name: "Sub Item")
         objectWillChange.send()
         menuBarItems[index].children.append(child)
-        // Submenus can't have click actions — clear any that exist.
-        menuBarItems[index].leftClickAction = nil
-        menuBarItems[index].rightClickAction = nil
+        // NOTE: keep parent click actions — they appear as menu entries.
+        // Wiping them here destroys user data with no undo.
         saveMenuBarItemsImmediate()
     }
 
@@ -1086,9 +1085,7 @@ final class RemapStore: ObservableObject {
                 let child = MenuBarItem(name: "Sub Item")
                 objectWillChange.send()
                 items[i].children.append(child)
-                // Submenus can't have click actions — clear any that exist.
-                items[i].leftClickAction = nil
-                items[i].rightClickAction = nil
+                // NOTE: keep parent click actions (see above).
                 saveMenuBarItemsImmediate()
                 return true
             }
@@ -1097,6 +1094,15 @@ final class RemapStore: ObservableObject {
             }
         }
         return false
+    }
+
+    /// Add a child to a top-level item's right-click menu (shown when the
+    /// item's Right Click behavior is Show Menu).
+    func addMenuBarRightChildItem(to parentID: UUID) {
+        guard let index = menuBarItems.firstIndex(where: { $0.id == parentID }) else { return }
+        objectWillChange.send()
+        menuBarItems[index].rightChildren.append(MenuBarItem(name: "Sub Item"))
+        saveMenuBarItemsImmediate()
     }
 
     /// Recursively find and update a child at any depth.
@@ -1202,9 +1208,15 @@ final class RemapStore: ObservableObject {
         guard childID != targetParentID,
               let child = findMenuBarItem(childID, in: menuBarItems),
               !containsMenuBarItem(targetParentID, in: [child]),
-              let moved = extractMenuBarChildItem(childID, from: &menuBarItems),
-              insertMenuBarChildItem(moved, into: targetParentID, at: targetIndex, in: &menuBarItems)
+              // Verify the destination exists *before* extracting — otherwise a
+              // failed insert after extraction silently deletes the item (menu
+              // bar edits have no undo, so the loss is permanent).
+              containsMenuBarItem(targetParentID, in: menuBarItems),
+              let moved = extractMenuBarChildItem(childID, from: &menuBarItems)
         else { return }
+        // Insert cannot fail here: the target isn't the child itself and isn't
+        // inside the child's subtree, so it survives the extraction above.
+        insertMenuBarChildItem(moved, into: targetParentID, at: targetIndex, in: &menuBarItems)
         saveMenuBarItemsImmediate()
     }
 
@@ -1256,8 +1268,20 @@ final class RemapStore: ObservableObject {
         return false
     }
 
-    func moveMenuBarItem(from source: IndexSet, to destination: Int) {
-        menuBarItems.move(fromOffsets: source, toOffset: destination)
+    /// Reorder items. `source`/`destination` are indices into `visibleItems`
+    /// (the list as shown in the sidebar — search-filtered, without hidden
+    /// top-level separators), not indices into `menuBarItems` itself. Hidden
+    /// items keep their slots; visible items are redistributed in the new order.
+    func moveMenuBarItem(from source: IndexSet, to destination: Int, within visibleItems: [MenuBarItem]) {
+        var reordered = visibleItems
+        reordered.move(fromOffsets: source, toOffset: destination)
+        let visibleIDs = Set(reordered.map(\.id))
+        var iterator = reordered.makeIterator()
+        for i in menuBarItems.indices where visibleIDs.contains(menuBarItems[i].id) {
+            if let next = iterator.next() {
+                menuBarItems[i] = next
+            }
+        }
         saveMenuBarItemsImmediate()
     }
 
@@ -2838,8 +2862,11 @@ final class RemapStore: ObservableObject {
         task.standardOutput = pipe
         task.standardError = pipe
         do { try task.run() } catch { return "" }
-        task.waitUntilExit()
+        // Drain the pipe *before* waiting: reading to EOF consumes output as it
+        // arrives, so a command producing more than the 64 KB pipe buffer can't
+        // deadlock against waitUntilExit().
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
         return String(data: data, encoding: .utf8) ?? ""
     }
 
@@ -2935,7 +2962,7 @@ final class RemapStore: ObservableObject {
 
     private static func runAppleScript(_ source: String) -> String {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("anvil_\\(UUID().uuidString).applescript")
+            .appendingPathComponent("anvil_\(UUID().uuidString).applescript")
         do {
             try source.write(to: tmp, atomically: true, encoding: .utf8)
         } catch { return "" }

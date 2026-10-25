@@ -7,6 +7,7 @@ import SwiftUI
 
 enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStringConvertible {
     case none = "None"
+    case showMenu = "Show Menu"
     case runShortcut = "Run Shortcut"
     case runShell = "Run Shell"
     case openApp = "Open App"
@@ -25,6 +26,7 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
     var icon: String {
         switch self {
         case .none: return "minus"
+        case .showMenu: return "list.bullet"
         case .runShortcut: return "shortcuts"
         case .runShell: return "terminal"
         case .openApp: return "app"
@@ -42,6 +44,7 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
     var helpText: String {
         switch self {
         case .none: return "No action"
+        case .showMenu: return "Open the item's sub-items menu"
         case .runShortcut: return "Run a macOS Shortcut"
         case .runShell: return "Execute a shell command"
         case .openApp: return "Open an application"
@@ -81,6 +84,7 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
     var summary: String {
         switch kind {
         case .none: return "No action"
+        case .showMenu: return "Show menu"
         case .runShortcut: return shortcutName.isEmpty ? "Run shortcut" : "Run \u{201C}\(shortcutName)\u{201D}"
         case .runShell:
             let cmd = shellCommand.trimmingCharacters(in: .whitespaces)
@@ -103,22 +107,37 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
     }
 
     /// Execute this action using the given remap engine / store context.
+    ///
+    /// Kinds that perform blocking I/O (shell commands, AppleScript, Shortcuts)
+    /// are dispatched to a background queue so a slow command can't freeze the
+    /// UI — the same treatment the manipulator engine gives its blocking actions.
     @MainActor
     func execute(store: RemapStore) {
-        guard kind != .none else { return }
+        // .showMenu is intercepted by StatusBarController, which opens the
+        // menu directly — there is nothing to execute here.
+        guard kind != .none && kind != .showMenu else { return }
         switch kind {
-        case .none:
+        case .none, .showMenu:
             break
         case .runShortcut:
             if !shortcutName.isEmpty {
-                Task { _ = ShortcutsService.runShortcut(named: shortcutName) }
+                let name = shortcutName
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = ShortcutsService.runShortcut(named: name)
+                }
             }
         case .runShell:
             if !shellCommand.isEmpty {
-                _ = store.runShellCommand(shellCommand)
+                let command = shellCommand
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = store.runShellCommand(command)
+                }
             }
         case .openApp:
-            store.openApplication(bundleID: appBundleID, name: appName)
+            let bundleID = appBundleID, name = appName
+            DispatchQueue.global(qos: .userInitiated).async {
+                store.openApplication(bundleID: bundleID, name: name)
+            }
         case .openURL:
             if !urlString.isEmpty, let url = URL(string: urlString) {
                 NSWorkspace.shared.open(url)
@@ -159,14 +178,16 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
             }
         case .runAppleScript:
             if !scriptBody.isEmpty {
-                Task {
+                let source = scriptBody
+                DispatchQueue.global(qos: .userInitiated).async {
                     var error: NSDictionary?
-                    if let script = NSAppleScript(source: scriptBody) {
+                    if let script = NSAppleScript(source: source) {
                         script.executeAndReturnError(&error)
-                        if let error {
-                            await MainActor.run {
-                                store.showNotificationMessage("AppleScript error: \(error)")
-                            }
+                    }
+                    if let error {
+                        let message = error[NSAppleScript.errorMessage] as? String ?? "Unknown error"
+                        Task { @MainActor in
+                            store.showNotificationMessage("AppleScript error: \(message)")
                         }
                     }
                 }
@@ -186,26 +207,63 @@ struct MenuBarItem: Identifiable, Equatable, Codable {
     var isEnabled: Bool = true
     var isSeparator: Bool = false
     var children: [MenuBarItem] = []
+    /// Sub-items shown by the right-click menu (when Right Click = Show Menu).
+    var rightChildren: [MenuBarItem] = []
     var leftClickAction: MenuBarItemAction?
     var rightClickAction: MenuBarItemAction?
 
+    /// Memberwise init, kept explicit because the custom decoder below would
+    /// otherwise suppress it.
+    init(id: UUID = UUID(), name: String = "New Menu Item", icon: String = "star",
+         isEnabled: Bool = true, isSeparator: Bool = false,
+         children: [MenuBarItem] = [], rightChildren: [MenuBarItem] = [],
+         leftClickAction: MenuBarItemAction? = nil, rightClickAction: MenuBarItemAction? = nil) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.isEnabled = isEnabled
+        self.isSeparator = isSeparator
+        self.children = children
+        self.rightChildren = rightChildren
+        self.leftClickAction = leftClickAction
+        self.rightClickAction = rightClickAction
+    }
+
+    /// Custom decoder so configs saved before `rightChildren` existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "New Menu Item"
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? "star"
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        isSeparator = try c.decodeIfPresent(Bool.self, forKey: .isSeparator) ?? false
+        children = try c.decodeIfPresent([MenuBarItem].self, forKey: .children) ?? []
+        rightChildren = try c.decodeIfPresent([MenuBarItem].self, forKey: .rightChildren) ?? []
+        leftClickAction = try c.decodeIfPresent(MenuBarItemAction.self, forKey: .leftClickAction)
+        rightClickAction = try c.decodeIfPresent(MenuBarItemAction.self, forKey: .rightClickAction)
+    }
+
+    /// "Has a runnable action" — Show Menu is a click behavior, not an action.
     var hasLeftAction: Bool {
         guard let action = leftClickAction else { return false }
-        return action.kind != .none
+        return action.kind != .none && action.kind != .showMenu
     }
 
     var hasRightAction: Bool {
         guard let action = rightClickAction else { return false }
-        return action.kind != .none
+        return action.kind != .none && action.kind != .showMenu
     }
 
     var summary: String {
         if isSeparator { return "Separator" }
         var parts: [String] = []
         if hasLeftAction { parts.append(leftClickAction?.summary ?? "") }
+        if leftClickAction?.kind == .showMenu { parts.append("Left: menu") }
         if hasRightAction { parts.append("Right: \(rightClickAction?.summary ?? "")") }
-        if !children.isEmpty {
-            parts.append("\(children.count) sub-item\(children.count == 1 ? "" : "s")")
+        if rightClickAction?.kind == .showMenu { parts.append("Right: menu") }
+        let subCount = children.count + rightChildren.count
+        if subCount > 0 {
+            parts.append("\(subCount) sub-item\(subCount == 1 ? "" : "s")")
         }
         if parts.isEmpty { return "No action" }
         return parts.joined(separator: " | ")
@@ -307,12 +365,6 @@ extension MenuBarItem {
                         )
                     ),
                 ]
-            ),
-            MenuBarItem(
-                name: "Separator",
-                icon: "minus",
-                isEnabled: true,
-                isSeparator: true
             ),
             MenuBarItem(
                 name: "Useful Links",

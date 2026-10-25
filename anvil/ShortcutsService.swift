@@ -59,12 +59,26 @@ enum ShortcutsService {
         task.standardOutput = outPipe
         task.standardError = errPipe
         do { try task.run() } catch { return "Error: \(error.localizedDescription)" }
-        task.waitUntilExit()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        if !data.isEmpty {
-            return String(data: data, encoding: .utf8) ?? ""
+        // Drain stdout and stderr concurrently — reading one pipe only after the
+        // process exits deadlocks if the other pipe's 64 KB buffer fills first.
+        var outData = Data()
+        var errData = Data()
+        let drain = DispatchGroup()
+        drain.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
         }
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        drain.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            drain.leave()
+        }
+        task.waitUntilExit()
+        drain.wait()
+        if !outData.isEmpty {
+            return String(data: outData, encoding: .utf8) ?? ""
+        }
         return String(data: errData, encoding: .utf8) ?? ""
     }
 

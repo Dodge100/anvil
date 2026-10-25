@@ -32,7 +32,7 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @ObservedObject var store: RemapStore
-    @State private var selectedMode: AppMode = .remaps
+    @State private var selectedMode: AppMode = .menuBar // TEMP: auto-open Menu Bar view
 
     var body: some View {
         VStack(spacing: 0) {
