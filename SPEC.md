@@ -47,7 +47,7 @@
 | `deviceExists` | ✅ | Check if a device is connected (`"built-in"`, `"external"`, or product ID) | Anvil |
 | `expression` | ✅ | Evaluate `variable_name == "value"` or `variable_name != "value"` expressions | Anvil |
 | `eventChanged` | ✅ | Check if event changed due to `keyboard_type` or `device` switch | Anvil |
-| Per-action conditions | ✅ | `to.conditions` — conditions applied to individual actions within a manipulator | Karabiner |
+| If / Else-if / Else branches | ✅ | Scratch-style conditional chain per manipulator: first matching branch runs; else is optional; each branch has its own AND/OR conditions and optional trigger scope | Anvil |
 
 **Comparison operators**: `is` (equals), `is not` (not equals), `contains`, `matches` (regex)
 
@@ -134,7 +134,7 @@
 | `repeat` control | ✅ | Disable repeat on held keys | Karabiner |
 | `halt` | ✅ | Stop processing further actions | Karabiner |
 | `hold_down_milliseconds` | ✅ | Hold a key for a specified duration then release | Karabiner |
-| `to.conditions` | ✅ | Per-action conditions — only send event if conditions are met | Karabiner |
+| `to.conditions` | ❌ | Removed — superseded by if/elif/else branches (each branch gates its own actions) | Karabiner |
 
 ### 2.8 Remap Vision
 
@@ -404,7 +404,7 @@
 | `halt` | ✅ | Stop processing further actions | Anvil |
 | `delay` | ✅ | Pause before next action | Anvil |
 | `disable` | ✅ | Swallow the event | Anvil |
-| `ifThenElse` | ❌ | Conditional branching with then/else | Keyboard Maestro |
+| `ifThenElse` | ✅ | Conditional branching with then/else — if/elif/else branch chains on manipulators | Keyboard Maestro |
 | `whileLoop` | ❌ | Loop while condition is true | Keyboard Maestro |
 | `repeatNTimes` | ❌ | Repeat actions N times | Keyboard Maestro |
 | `forEach` | ❌ | Iterate over a list of items | Keyboard Maestro |
@@ -938,7 +938,7 @@ The app ships with **50 test manipulators** demonstrating:
 | 21 | Condition: Expression (Variable == Value) | `expression` condition |
 | 22 | Condition: Event Changed (Keyboard Type) | `eventChanged` condition |
 | 23 | Lazy Modifier Action | `isLazy` modifier behavior |
-| 24 | Per-Action Conditions | `to.conditions` on individual actions |
+| 24 | If/Else Branches | if/elif/else branch chain with optional else |
 | 25 | Select Input Source (ABC) | `selectInputSource` action |
 | 26 | Mouse Basic (Middle Button Remap) | `mouseBasic` manipulator type |
 | 27 | Mouse Motion to Scroll | `mouseMotionToScroll` type |

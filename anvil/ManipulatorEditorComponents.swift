@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// Shared number formatter — `NumberFormatter()` init is expensive and was
+/// previously constructed inline in `body` on every render.
+extension NumberFormatter {
+    static let sharedInteger: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+}
+
 // MARK: - Condition step row
 
 struct ConditionStepRow: View {
@@ -8,70 +19,43 @@ struct ConditionStepRow: View {
     let onChange: ((inout Condition) -> Void) -> Void
     let onDelete: () -> Void
     var onChangeKind: (() -> Void)? = nil
+    var onMoveUp: (() -> Void)? = nil
+    var onMoveDown: (() -> Void)? = nil
 
     @State private var installedApps: [InstalledApp] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Header row with kind selector and delete
-            HStack(alignment: .center, spacing: 8) {
-                // Kind label — click to replace
-                Button {
-                    onChangeKind?()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: condition.kind.symbol)
-                            .foregroundStyle(.orange)
-                            .frame(width: 16)
-                        Text(condition.kind.rawValue)
-                            .font(.subheadline.weight(.medium))
-
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("Click to change condition type")
-                
-                // Comparison operator (when applicable)
-                if condition.kind != .deviceExists && condition.kind != .expression && condition.kind != .eventChanged {
-                    Picker("Op", selection: opBinding) {
-                        ForEach(ComparisonOp.allCases) { op in
-                            Text(op.rawValue).tag(op)
+        Group {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label(condition.kind.rawValue, systemImage: condition.kind.symbol)
+                    
+                    if condition.kind != .deviceExists && condition.kind != .expression && condition.kind != .eventChanged {
+                        Picker("Comparison", selection: opBinding) {
+                            ForEach(ComparisonOp.allCases) { op in
+                                Text(op.rawValue).tag(op)
+                            }
                         }
+                        .labelsHidden()
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 72)
+
+                    Spacer()
+
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
                 }
-                
-                Spacer()
-                
-                // Delete button
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-            
-            // Value field based on condition type
-            if condition.kind == .variable || condition.kind == .globalVariable {
-                HStack(spacing: 6) {
+
+                // Value field based on condition type
+                if condition.kind == .variable || condition.kind == .globalVariable {
                     TextField("Variable name", text: targetBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.subheadline, design: .monospaced))
-                    Text("=")
-                        .foregroundStyle(.secondary)
                     if isBoolValue(condition.value) {
-                        Toggle("", isOn: variableBoolBinding)
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
+                        Toggle("Expected value", isOn: variableBoolBinding)
                     } else {
                         TextField("Expected value", text: variableValueBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.subheadline, design: .monospaced))
                     }
-                    Button(isBoolValue(condition.value) ? "Text" : "Bool") {
+                    Button(isBoolValue(condition.value) ? "Use text value" : "Use true/false") {
                         let current = condition.value
                         var newValue: String
                         if isBoolValue(current) {
@@ -81,15 +65,9 @@ struct ConditionStepRow: View {
                         }
                         onChange { $0.value = newValue }
                     }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            } else if condition.kind == .frontmostApp || condition.kind == .frontmostAppName {
-                HStack(spacing: 8) {
-                    TextField(condition.kind.placeholder, text: targetBinding)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.subheadline, design: .monospaced))
+                } else if condition.kind == .frontmostApp || condition.kind == .frontmostAppName {
+                    TextField("Value", text: targetBinding, prompt: Text(condition.kind.placeholder))
+                        .labelsHidden()
                     AppPicker(installedApps: installedApps) { app in
                         onChange { condition in
                             condition.target = condition.kind == .frontmostAppName
@@ -98,30 +76,34 @@ struct ConditionStepRow: View {
                         }
                     }
                     .onAppear(perform: loadInstalledApps)
+                } else if condition.kind == .expression {
+                    TextField("Expression", text: targetBinding, prompt: Text("e.g. my_var == \"hello\""))
+                        .labelsHidden()
+                } else if condition.kind == .eventChanged {
+                    Picker("Event type", selection: targetBinding) {
+                        Text("Keyboard Type").tag("keyboard_type")
+                        Text("Device").tag("device")
+                    }
+                } else {
+                    TextField("Value", text: targetBinding, prompt: Text(condition.kind.placeholder))
+                        .labelsHidden()
                 }
-            } else if condition.kind == .expression {
-                TextField("e.g. my_var == \"hello\"", text: targetBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-            } else if condition.kind == .eventChanged {
-                Picker("Event type", selection: targetBinding) {
-                    Text("Keyboard Type").tag("keyboard_type")
-                    Text("Device").tag("device")
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-            } else {
-                TextField(condition.kind.placeholder, text: targetBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
+
+                Text(condition.kind.helpText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            
-            // Help text
-            Text(condition.kind.helpText)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
         }
-        .padding(8)
+        .contextMenu {
+            Button("Change Type…") { onChangeKind?() }
+            if onMoveUp != nil || onMoveDown != nil {
+                Divider()
+                Button("Move Up", action: onMoveUp ?? {})
+                Button("Move Down", action: onMoveDown ?? {})
+            }
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+        }
     }
 
     private func loadInstalledApps() {
@@ -177,25 +159,17 @@ private struct AppPicker: View {
     let onSelect: (InstalledApp) -> Void
 
     var body: some View {
-        Menu {
+        Menu("Choose app") {
             if installedApps.isEmpty {
-                Text("Scanning applications\u{2026}")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("Scanning applications…")
             } else {
                 ForEach(installedApps) { app in
-                    Button {
+                    Button(app.name) {
                         onSelect(app)
-                    } label: {
-                        Text(app.name)
                     }
                 }
             }
-        } label: {
-            Text("…").font(.body)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
         .help("Choose an installed app")
     }
 }
@@ -208,72 +182,45 @@ struct ActionStepRow: View {
     let onChange: ((inout Action) -> Void) -> Void
     let onDelete: () -> Void
     var onChangeKind: (() -> Void)? = nil
-
-    @State private var isExpanded = true
+    var onMoveUp: (() -> Void)? = nil
+    var onMoveDown: (() -> Void)? = nil
+    var onDuplicate: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            if isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    actionEditor
-                    actionModifiersSection
-                    fireModeSection
-                    actionConditionsSection
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 12) {
+                actionEditor
+                actionModifiersSection
+                fireModeSection
+                
+                HStack {
+                    if let onChangeKind = onChangeKind {
+                        Button("Change Type…", action: onChangeKind)
+                    }
+                    Spacer()
+                    Button("Delete", role: .destructive, action: onDelete)
                 }
-                .padding(.top, 8)
+            }
+        } label: {
+            Label(action.kind.rawValue, systemImage: action.kind.symbol)
+            
+            if !action.summary.isEmpty {
+                Text(action.summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // Kind label — click to replace
-            Button {
-                onChangeKind?()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: action.kind.symbol)
-                        .foregroundStyle(.green)
-                        .frame(width: 16)
-                    Text(action.kind.rawValue)
-                        .font(.subheadline.weight(.medium))
-
-                }
+        .contextMenu {
+            Button("Change Type…") { onChangeKind?() }
+            if onMoveUp != nil || onMoveDown != nil || onDuplicate != nil {
+                Divider()
+                Button("Move Up", action: onMoveUp ?? {})
+                Button("Move Down", action: onMoveDown ?? {})
+                Button("Duplicate", action: onDuplicate ?? {})
             }
-            .buttonStyle(.plain)
-            .help("Click to change action type")
-
-            // Summary as secondary text
-            Text(action.summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Spacer()
-
-            // Expand/collapse and delete
-            HStack(spacing: 4) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isExpanded.toggle()
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "Collapse" : "Expand")
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Remove action")
-            }
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
         }
     }
 
@@ -292,20 +239,20 @@ struct ActionStepRow: View {
         case .runAppleScript: RunAppleScriptEditor(action: action, onChange: onChange)
         case .delay: DelayEditor(action: action, onChange: onChange)
         case .disable: Text("This action swallows the keypress entirely so the system never sees it.")
-            .font(.caption)
+            .font(.footnote)
             .foregroundStyle(.secondary)
         case .consumerKey: ConsumerKeyEditor(action: action, onChange: onChange)
         case .pointingButton: PointingButtonEditor(action: action, onChange: onChange)
         case .mouseKey: MouseKeyEditor(action: action, onChange: onChange)
         case .stickyModifier: StickyModifierEditor(action: action, onChange: onChange)
         case .halt: Text("Stops processing further actions in this manipulator. Useful with conditions.")
-            .font(.caption)
+            .font(.footnote)
             .foregroundStyle(.secondary)
         case .holdDown: HoldDownEditor(store: store, action: action, onChange: onChange)
         case .selectInputSource: SelectInputSourceEditor(action: action, onChange: onChange)
         case .setNotification: SetNotificationEditor(action: action, onChange: onChange)
         case .fromEvent: Text("Mirrors the original trigger event. Sends whatever key was originally pressed.")
-            .font(.caption)
+            .font(.footnote)
             .foregroundStyle(.secondary)
         case .softwareFunction: SoftwareFunctionEditor(action: action, onChange: onChange)
         case .sendUserCommand: SendUserCommandEditor(action: action, onChange: onChange)
@@ -314,84 +261,84 @@ struct ActionStepRow: View {
         case .unsetGlobalVariable: UnsetVariableEditor(action: action, onChange: onChange)
         case .showPalette:
             Text("Shows the floating macro palette.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .hidePalette:
             Text("Hides the floating macro palette.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .getSelectedText:
             Text("Gets the currently selected text from the frontmost application and stores it for use by later actions.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .setClipboard:
             SetClipboardEditor(action: action, onChange: onChange)
         case .getClipboard:
             Text("Reads the current clipboard content and stores it for use by later actions.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .clearClipboard:
             Text("Clears the system clipboard.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .activateApp, .hideApp, .unhideApp, .quitApp, .forceQuitApp:
             OpenAppEditor(action: action, onChange: onChange)
         case .activateLastApp:
             Text("Switches back to the previously active application.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .windowAction:
             WindowActionEditor(action: action, onChange: onChange)
         case .lockScreen:
             Text("Locks the screen (switches to the login window).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .showDesktop:
             Text("Shows the desktop by pushing all windows aside.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .missionControl:
             Text("Activates Mission Control.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .toggleDarkMode:
             Text("Toggles between Dark and Light appearance.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .setVolume:
             SetVolumeEditor(action: action, onChange: onChange)
         case .muteSystem:
             Text("Toggles system audio mute on/off.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .emptyTrash:
             Text("Empties the Trash via Finder.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .getBatteryState:
             Text("Stores battery level in `batteryLevel` and charging state in `batteryCharging` variables.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .getIPAddress:
             Text("Stores the current IP address in the `ipAddress` variable.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .toggleHiddenFiles:
             Text("Toggles hidden file visibility in Finder (restarts Finder).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .logOut:
             Text("Logs out the current user (asks for confirmation).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .restartSystem:
             Text("Restarts the Mac (asks for confirmation).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .shutdownSystem:
             Text("Shuts down the Mac (asks for confirmation).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .speakText:
             SendTextEditor(action: action, onChange: onChange)
         case .transformText:
@@ -404,8 +351,8 @@ struct ActionStepRow: View {
             SetClipboardEditor(action: action, onChange: onChange)
         case .pasteClipboard:
             Text("Pastes the current clipboard by sending ⌘V.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .httpRequest:
             HTTPRequestEditor(action: action, onChange: onChange)
         case .openFile, .openFolder:
@@ -414,74 +361,36 @@ struct ActionStepRow: View {
             PlaySoundEditor(action: action, onChange: onChange)
         case .flashScreen:
             Text("Flashes the screen with a brief white overlay — useful as visual feedback for a macro.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
     private var actionModifiersSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Modifiers")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Toggle("Lazy", isOn: lazyBinding)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help("Modifier does not apply until another key is pressed")
+        Group {
+            Toggle("Lazy modifier", isOn: lazyBinding)
+                .help("Modifier does not apply until another key is pressed")
 
-                Picker("Repeat", selection: repeatBinding) {
-                    Text("Default").tag(Optional<Bool>.none)
-                    Text("Enable").tag(Optional<Bool>.some(true))
-                    Text("Disable").tag(Optional<Bool>.some(false))
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 100)
-                .help("Override key repeat behavior")
+            Picker("Key repeat", selection: repeatBinding) {
+                Text("Default").tag(Optional<Bool>.none)
+                Text("Enable").tag(Optional<Bool>.some(true))
+                Text("Disable").tag(Optional<Bool>.some(false))
             }
-        }
-    }
-
-    @ViewBuilder
-    private var actionConditionsSection: some View {
-        if !action.actionConditions.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Per-action conditions")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                ForEach(action.actionConditions) { cond in
-                    HStack {
-                        Text(cond.summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button {
-                            onChange { $0.actionConditions.removeAll { $0.id == cond.id } }
-                        } label: {
-                            Text("X").font(.caption2)
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
+            .help("Override key repeat behavior")
         }
     }
 
     private var fireModeSection: some View {
-        HStack(spacing: 8) {
+        Group {
             Picker("When", selection: fireModeBinding) {
                 ForEach(ActionFireMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
             .help(action.fireMode.helpText)
             Text(action.fireMode.helpText)
-                .font(.caption)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
         }
     }
 
@@ -520,8 +429,6 @@ private struct ConsumerKeyEditor: View {
                 Text(key.label).tag(Optional.some(key))
             }
         }
-        .labelsHidden()
-        .pickerStyle(.menu)
     }
 
     private var consumerBinding: Binding<ConsumerKeyCode?> {
@@ -543,8 +450,6 @@ private struct PointingButtonEditor: View {
                 Text(btn.label).tag(Optional.some(btn))
             }
         }
-        .labelsHidden()
-        .pickerStyle(.menu)
     }
 
     private var buttonBinding: Binding<PointingButton?> {
@@ -560,35 +465,13 @@ private struct MouseKeyEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Movement").font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        TextField("X", value: xBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                        TextField("Y", value: yBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Scroll").font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        TextField("V", value: vScrollBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                        TextField("H", value: hScrollBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 60)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Speed").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: speedBinding, in: 0.1...10)
-                        .frame(width: 80)
-                }
+        Group {
+            TextField("Move X", value: xBinding, formatter: NumberFormatter.sharedInteger)
+            TextField("Move Y", value: yBinding, formatter: NumberFormatter.sharedInteger)
+            TextField("Vertical scroll", value: vScrollBinding, formatter: NumberFormatter.sharedInteger)
+            TextField("Horizontal scroll", value: hScrollBinding, formatter: NumberFormatter.sharedInteger)
+            LabeledContent("Speed") {
+                Slider(value: speedBinding, in: 0.1...10)
             }
         }
     }
@@ -634,22 +517,18 @@ private struct StickyModifierEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        Group {
             Picker("Modifier", selection: modBinding) {
                 ForEach(ModifierKey.flagBased, id: \.self) { mod in
                     Text(mod.longName).tag(mod)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
 
             Picker("Action", selection: kindBinding) {
                 ForEach(StickyModifierKind.allCases) { kind in
                     Text(kind.rawValue.capitalized).tag(kind)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
         }
     }
 
@@ -674,28 +553,24 @@ private struct HoldDownEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Key")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                KeyComboCaptureField(
-                    modifiers: action.toModifiers,
-                    key: action.toKey,
-                    isCapturing: store.isCapturingToKey,
-                    onStart: { store.startSendKeyCapture(for: action.id) },
-                    onCancel: { store.stopToKeyCapture() }
-                )
+        Group {
+            LabeledContent("Key") {
+                HStack {
+                    KeyComboCaptureField(
+                        isRecording: store.isCapturingToKey,
+                        displayLabel: action.toKey.isEmpty ? "" : KeyShortcut(mandatoryModifiers: action.toModifiers, key: action.toKey).displayLabel,
+                        onStart: { store.startSendKeyCapture(for: action.id) },
+                        onStop: { store.stopToKeyCapture() }
+                    )
+                    KeyPickerMenu { picked in
+                        onChange { action in
+                            action.toKey = picked
+                            action.toModifiers = []
+                        }
+                    }
+                }
             }
-            HStack {
-                Text("Hold duration")
-                    .foregroundStyle(.secondary)
-                TextField("ms", value: holdBinding, formatter: NumberFormatter())
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-                Text("ms")
-                    .foregroundStyle(.secondary)
-            }
+            TextField("Hold duration (ms)", value: holdBinding, formatter: NumberFormatter.sharedInteger)
         }
     }
 
@@ -713,8 +588,6 @@ private struct SelectInputSourceEditor: View {
 
     var body: some View {
         TextField("Input source ID (e.g. com.apple.keylayout.ABC)", text: inputBinding)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
     }
 
     private var inputBinding: Binding<String> {
@@ -731,7 +604,6 @@ private struct SetNotificationEditor: View {
 
     var body: some View {
         TextField("Notification message", text: messageBinding)
-            .textFieldStyle(.roundedBorder)
     }
 
     private var messageBinding: Binding<String> {
@@ -747,39 +619,20 @@ private struct SoftwareFunctionEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Group {
             Picker("Function", selection: functionBinding) {
                 ForEach(SoftwareFunctionKind.allCases) { fn in
                     Text(fn.rawValue).tag(fn)
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
 
             if action.softwareFunction == .openApplication {
                 TextField("App bundle ID, path, or name", text: appPathBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
             }
 
             if action.softwareFunction == .setCursorPosition {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("X").font(.caption).foregroundStyle(.secondary)
-                        TextField("0", value: cursorXBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 80)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Y").font(.caption).foregroundStyle(.secondary)
-                        TextField("0", value: cursorYBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 80)
-                    }
-                    Text("(screen coordinates)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                TextField("X (screen coordinates)", value: cursorXBinding, formatter: NumberFormatter.sharedInteger)
+                TextField("Y (screen coordinates)", value: cursorYBinding, formatter: NumberFormatter.sharedInteger)
             }
         }
     }
@@ -813,6 +666,38 @@ private struct SoftwareFunctionEditor: View {
     }
 }
 
+// MARK: - Shared modifier toggles (native checkboxes)
+
+struct ModifierToggles: View {
+    let selected: Set<ModifierKey>
+    let onChange: (Set<ModifierKey>) -> Void
+
+    var body: some View {
+        HStack {
+            ForEach(ModifierKey.flagBased, id: \.self) { mod in
+                Toggle(mod.symbol, isOn: binding(for: mod))
+                    .toggleStyle(.checkbox)
+                    .help(mod.longName)
+            }
+        }
+    }
+
+    private func binding(for mod: ModifierKey) -> Binding<Bool> {
+        Binding(
+            get: { selected.contains(mod) },
+            set: { isOn in
+                var newSet = selected
+                if isOn {
+                    newSet.insert(mod)
+                } else {
+                    newSet.remove(mod)
+                }
+                onChange(newSet)
+            }
+        )
+    }
+}
+
 // MARK: - Existing action editors
 
 private struct SendKeyEditor: View {
@@ -821,82 +706,35 @@ private struct SendKeyEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 6) {
+        Group {
+            LabeledContent("Key to send") {
                 HStack {
-                    Text("Key to send")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
                     KeyComboCaptureField(
-                        modifiers: action.toModifiers,
-                        key: action.toKey,
-                        isCapturing: store.isCapturingToKey,
+                        isRecording: store.isCapturingToKey,
+                        displayLabel: action.toKey.isEmpty ? "" : KeyShortcut(mandatoryModifiers: action.toModifiers, key: action.toKey).displayLabel,
                         onStart: { store.startSendKeyCapture(for: action.id) },
-                        onCancel: { store.stopToKeyCapture() }
+                        onStop: { store.stopToKeyCapture() }
                     )
                     if !action.toKey.isEmpty {
-                        Button {
+                        Button("Clear", role: .destructive) {
                             onChange { action in
                                 action.toKey = ""
                                 action.toModifiers = []
                             }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
                         }
-                        .buttonStyle(.plain)
                         .help("Clear key")
                     }
-                }
-                HStack(spacing: 4) {
-                    Text("Modifiers")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    ForEach(ModifierKey.flagBased, id: \.self) { mod in
-                        Button {
-                            var newSet = action.toModifiers
-                            if newSet.contains(mod) {
-                                newSet.remove(mod)
-                            } else {
-                                newSet.insert(mod)
-                            }
-                            onChange { $0.toModifiers = newSet }
-                        } label: {
-                            Text(mod.symbol)
-                                .font(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(action.toModifiers.contains(mod) ? Color(nsColor: .controlBackgroundColor).opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                    KeyPickerMenu { picked in
+                        onChange { action in
+                            action.toKey = picked
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
-        }
-    }
-
-    private func modifierChips(for selected: Set<ModifierKey>, onChange: @escaping (Set<ModifierKey>) -> Void) -> some View {
-        HStack(spacing: 4) {
-            ForEach(ModifierKey.flagBased, id: \.self) { mod in
-                Button {
-                    var newSet = selected
-                    if newSet.contains(mod) {
-                        newSet.remove(mod)
-                    } else {
-                        newSet.insert(mod)
-                    }
-                    onChange(newSet)
-                } label: {
-                    Text(mod.symbol)
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(selected.contains(mod) ? Color(nsColor: .controlBackgroundColor).opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+            LabeledContent("Modifiers") {
+                ModifierToggles(selected: action.toModifiers) { newSet in
+                    onChange { $0.toModifiers = newSet }
                 }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -909,8 +747,6 @@ private struct SendTextEditor: View {
     var body: some View {
         TextField("Type this text", text: textBinding, axis: .vertical)
             .lineLimit(1...4)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
     }
 
     private var textBinding: Binding<String> {
@@ -923,15 +759,8 @@ private struct SetClipboardEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Set clipboard to:")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Text to set", text: textBinding, axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-        }
+        TextField("Clipboard text", text: textBinding, axis: .vertical)
+            .lineLimit(1...4)
     }
 
     private var textBinding: Binding<String> {
@@ -948,22 +777,14 @@ private struct SetVariableEditor: View {
     }
 
     var body: some View {
-        HStack {
-            TextField("Name", text: nameBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-            Text("=")
-                .foregroundStyle(.secondary)
+        Group {
+            TextField("Variable name", text: nameBinding)
             if isBool {
-                Toggle("", isOn: boolBinding)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
+                Toggle("Value", isOn: boolBinding)
             } else {
                 TextField("Value", text: valueBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
             }
-            Button(isBool ? "Text" : "Bool") {
+            Button(isBool ? "Use text value" : "Use true/false") {
                 let current = action.variableValue
                 if current == "true" || current == "false" {
                     onChange { $0.variableValue = current == "true" ? "yes" : "" }
@@ -972,8 +793,6 @@ private struct SetVariableEditor: View {
                     onChange { $0.variableValue = boolVal ? "true" : "false" }
                 }
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
         }
     }
 
@@ -999,8 +818,6 @@ private struct UnsetVariableEditor: View {
 
     var body: some View {
         TextField("Variable name", text: nameBinding)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
     }
 
     private var nameBinding: Binding<String> {
@@ -1013,13 +830,9 @@ private struct ToggleVariableEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        HStack {
+        Group {
             TextField("Variable name", text: nameBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
             Toggle("Initial value", isOn: initialBinding)
-                .toggleStyle(.switch)
-                .controlSize(.small)
         }
     }
 
@@ -1042,8 +855,6 @@ private struct RunShellEditor: View {
     var body: some View {
         TextField("Shell command", text: commandBinding, axis: .vertical)
             .lineLimit(1...4)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
     }
 
     private var commandBinding: Binding<String> {
@@ -1056,22 +867,9 @@ private struct OpenAppEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Name")
-                    .frame(width: 80, alignment: .leading)
-                    .foregroundStyle(.secondary)
-                TextField("App name (e.g. Safari)", text: nameBinding)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                Text("Bundle ID")
-                    .frame(width: 80, alignment: .leading)
-                    .foregroundStyle(.secondary)
-                TextField("com.apple.Safari", text: bundleBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-            }
+        Group {
+            TextField("App name (e.g. Safari)", text: nameBinding)
+            TextField("Bundle ID (e.g. com.apple.Safari)", text: bundleBinding)
         }
     }
 
@@ -1089,9 +887,7 @@ private struct OpenURLEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        TextField("https://example.com", text: urlBinding)
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
+        TextField("URL", text: urlBinding, prompt: Text("https://example.com"))
     }
 
     private var urlBinding: Binding<String> {
@@ -1106,38 +902,25 @@ private struct RunShortcutEditor: View {
     @State private var hasLoaded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        Group {
             HStack {
                 TextField("Shortcut name", text: nameBinding)
-                    .textFieldStyle(.roundedBorder)
-                Button {
+                Button("Reload") {
                     loadSuggestions()
-                } label: {
-                    Text("Reload").font(.caption)
                 }
-                .buttonStyle(.borderless)
                 .help("Reload installed Shortcuts")
             }
             if !suggestions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(suggestions) { info in
-                            Button {
-                                onChange { $0.shortcutName = info.name }
-                            } label: {
-                                Text(info.name)
-                                    .font(.caption)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(.quaternary, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
+                FlowLayout(spacing: 4) {
+                    ForEach(suggestions) { info in
+                        Button(info.name) {
+                            onChange { $0.shortcutName = info.name }
                         }
                     }
                 }
             } else if hasLoaded {
                 Text("No installed Shortcuts found.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
@@ -1154,118 +937,73 @@ private struct RunShortcutEditor: View {
     }
 }
 
+// MARK: - Manipulator parameters editor (kept for compatibility)
+
 struct ManipulatorParametersEditor: View {
     let parameters: ManipulatorParameters
     let onChange: (ManipulatorParameters) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            parameterRow(
-                icon: "timer",
-                title: "To If Alone Timeout",
+        Group {
+            parameterField(
+                title: "To If Alone Timeout (ms)",
                 help: "How long a key can be held before being treated as held rather than tapped.",
-                unit: "ms",
                 binding: intBinding(
                     get: { parameters.toIfAloneTimeoutMilliseconds },
                     set: { newValue in onChange(intWithKey(parameters, \.toIfAloneTimeoutMilliseconds, newValue)) }
                 )
             )
-            parameterRow(
-                icon: "hand.raised",
-                title: "To If Held Down Threshold",
+            parameterField(
+                title: "To If Held Down Threshold (ms)",
                 help: "Minimum hold duration for the key to be considered held down.",
-                unit: "ms",
                 binding: intBinding(
                     get: { parameters.toIfHeldDownThresholdMilliseconds },
                     set: { newValue in onChange(intWithKey(parameters, \.toIfHeldDownThresholdMilliseconds, newValue)) }
                 )
             )
-            parameterRow(
-                icon: "clock.arrow.circlepath",
-                title: "To Delay Action Delay",
+            parameterField(
+                title: "To Delay Action Delay (ms)",
                 help: "Delay before the delayed action is executed.",
-                unit: "ms",
                 binding: intBinding(
                     get: { parameters.toDelayActionDelayMilliseconds },
                     set: { newValue in onChange(intWithKey(parameters, \.toDelayActionDelayMilliseconds, newValue)) }
                 )
             )
-            parameterRow(
-                icon: "arrow.left.arrow.right",
-                title: "Simultaneous Threshold",
+            parameterField(
+                title: "Simultaneous Threshold (ms)",
                 help: "Maximum gap between key presses in a sequence trigger.",
-                unit: "ms",
                 binding: intBinding(
                     get: { parameters.simultaneousThresholdMilliseconds },
                     set: { newValue in onChange(intWithKey(parameters, \.simultaneousThresholdMilliseconds, newValue)) }
                 )
             )
-            parameterSliderRow(
-                icon: "cursorarrow.motionlines",
-                title: "Mouse Motion Scroll Speed",
-                help: "Multiplier for mouse motion to scroll conversion.",
-                value: String(format: "%.1fx", parameters.mouseMotionToScrollSpeed),
-                binding: speedBinding,
-                range: 0.1...10,
-                step: 0.1
-            )
-        }
-    }
-
-    private func parameterSliderRow(icon: String, title: String, help: String, value: String, binding: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body.weight(.medium))
-                    Text(help)
-                        .font(.caption)
+            LabeledContent("Mouse Motion Scroll Speed") {
+                HStack {
+                    Slider(value: logSpeedBinding, in: Self.logMinSpeed...Self.logMaxSpeed)
+                        .frame(maxWidth: 140)
+                    TextField("Speed", value: speedBinding, format: .number.precision(.fractionLength(0...2)))
+                        .labelsHidden()
+                        .frame(maxWidth: 64)
+                        .multilineTextAlignment(.trailing)
+                    Text("×")
                         .foregroundStyle(.secondary)
                 }
             }
-            Spacer()
-            HStack(spacing: 4) {
-                Slider(value: binding, in: range, step: step)
-                Text(value)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 52, alignment: .leading)
-            }
-            .frame(width: 120)
+            Text("Multiplier for mouse motion to scroll conversion.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
-    private func parameterRow(icon: String, title: String, help: String, unit: String, binding: Binding<String>) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.body.weight(.medium))
-                    Text(help)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            HStack(spacing: 4) {
-                TextField("value", text: binding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 80)
-                Text(unit)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .leading)
-            }
-            .frame(width: 120)
+    private func parameterField(title: String, help: String, binding: Binding<String>) -> some View {
+        Group {
+            TextField(title, text: binding)
+            Text(help)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
+
 
     private func intBinding(get: @escaping () -> Int, set: @escaping (Int) -> Void) -> Binding<String> {
         Binding(
@@ -1285,10 +1023,30 @@ struct ManipulatorParametersEditor: View {
         return p
     }
 
+    static let minSpeed: Double = 0.1
+    static let maxSpeed: Double = 10
+    static let logMinSpeed: Double = -1 // log10(0.1)
+    static let logMaxSpeed: Double = 1 // log10(10)
+
     private var speedBinding: Binding<Double> {
         Binding(
             get: { self.parameters.mouseMotionToScrollSpeed },
-            set: { newValue in self.onChange(self.doubleWithKey(self.parameters, \.mouseMotionToScrollSpeed, newValue)) }
+            set: { newValue in
+                let clamped = min(max(newValue, Self.minSpeed), Self.maxSpeed)
+                self.onChange(self.doubleWithKey(self.parameters, \.mouseMotionToScrollSpeed, clamped))
+            }
+        )
+    }
+
+    /// Slider position in log space so each half of the travel covers one
+    /// decade (0.1–1, 1–10) instead of cramming all fine control at the left.
+    private var logSpeedBinding: Binding<Double> {
+        Binding(
+            get: { log10(max(self.parameters.mouseMotionToScrollSpeed, Self.minSpeed)) },
+            set: { newValue in
+                let clamped = min(max(newValue, Self.logMinSpeed), Self.logMaxSpeed)
+                self.onChange(self.doubleWithKey(self.parameters, \.mouseMotionToScrollSpeed, pow(10, clamped)))
+            }
         )
     }
 
@@ -1299,6 +1057,131 @@ struct ManipulatorParametersEditor: View {
     }
 }
 
+// MARK: - Contextual parameters editor (new)
+
+struct ContextualParametersEditor: View {
+    let manipulator: Manipulator
+    @Binding var parameters: ManipulatorParameters
+
+    var body: some View {
+        Group {
+            switch triggerKind {
+            case .keyboard:
+                VStack(alignment: .leading, spacing: 12) {
+                    parameterField(
+                        title: "To If Alone Timeout (ms)",
+                        help: "How long a key can be held before being treated as held rather than tapped.",
+                        binding: intBinding(
+                            get: { parameters.toIfAloneTimeoutMilliseconds },
+                            set: { newValue in parameters.toIfAloneTimeoutMilliseconds = max(newValue, 0) }
+                        )
+                    )
+                    parameterField(
+                        title: "To If Held Down Threshold (ms)",
+                        help: "Minimum hold duration for the key to be considered held down.",
+                        binding: intBinding(
+                            get: { parameters.toIfHeldDownThresholdMilliseconds },
+                            set: { newValue in parameters.toIfHeldDownThresholdMilliseconds = max(newValue, 0) }
+                        )
+                    )
+                    parameterField(
+                        title: "To Delay Action Delay (ms)",
+                        help: "Delay before the delayed action is executed.",
+                        binding: intBinding(
+                            get: { parameters.toDelayActionDelayMilliseconds },
+                            set: { newValue in parameters.toDelayActionDelayMilliseconds = max(newValue, 0) }
+                        )
+                    )
+                    if manipulator.trigger.simultaneous != nil {
+                        parameterField(
+                            title: "Simultaneous Threshold (ms)",
+                            help: "Maximum gap between key presses in a sequence trigger.",
+                            binding: intBinding(
+                                get: { parameters.simultaneousThresholdMilliseconds },
+                                set: { newValue in parameters.simultaneousThresholdMilliseconds = max(newValue, 0) }
+                            )
+                        )
+                    }
+                }
+            case .mouseMotionToScroll:
+                VStack(alignment: .leading, spacing: 12) {
+                    LabeledContent("Mouse Motion Scroll Speed") {
+                        HStack {
+                            Slider(value: logSpeedBinding, in: ManipulatorParametersEditor.logMinSpeed...ManipulatorParametersEditor.logMaxSpeed)
+                                .frame(maxWidth: 140)
+                            TextField("Speed", value: speedBinding, format: .number.precision(.fractionLength(0...2)))
+                                .labelsHidden()
+                                .frame(maxWidth: 64)
+                                .multilineTextAlignment(.trailing)
+                            Text("×")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Multiplier for mouse motion to scroll conversion.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            default:
+                EmptyView()
+            }
+        }
+    }
+
+    private func parameterField(title: String, help: String, binding: Binding<Int>) -> some View {
+        Group {
+            TextField(title, value: binding, formatter: NumberFormatter.sharedInteger)
+            Text(help)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func intBinding(get: @escaping () -> Int, set: @escaping (Int) -> Void) -> Binding<Int> {
+        Binding(
+            get: get,
+            set: { newValue in set(max(newValue, 0)) }
+        )
+    }
+
+    /// The trigger kind, resolved from the manipulator type + trigger key type.
+    private enum TriggerKind {
+        case keyboard, consumer, pointing, typedString, any, mouseMotionToScroll
+    }
+
+    private var triggerKind: TriggerKind {
+        if manipulator.manipulatorType == .mouseMotionToScroll { return .mouseMotionToScroll }
+        switch manipulator.trigger.keyType {
+        case .keyboard: return .keyboard
+        case .consumer: return .consumer
+        case .pointing: return .pointing
+        case .typedString: return .typedString
+        case .any: return .any
+        }
+    }
+
+    private var speedBinding: Binding<Double> {
+        Binding(
+            get: { parameters.mouseMotionToScrollSpeed },
+            set: { newValue in
+                let clamped = min(max(newValue, ManipulatorParametersEditor.minSpeed), ManipulatorParametersEditor.maxSpeed)
+                parameters.mouseMotionToScrollSpeed = clamped
+            }
+        )
+    }
+
+    private var logSpeedBinding: Binding<Double> {
+        Binding(
+            get: { log10(max(parameters.mouseMotionToScrollSpeed, ManipulatorParametersEditor.minSpeed)) },
+            set: { newValue in
+                let clamped = min(max(newValue, ManipulatorParametersEditor.logMinSpeed), ManipulatorParametersEditor.logMaxSpeed)
+                parameters.mouseMotionToScrollSpeed = pow(10, clamped)
+            }
+        )
+    }
+}
+
+// MARK: - Shared apple script editor
+
 private struct RunAppleScriptEditor: View {
     let action: Action
     let onChange: ((inout Action) -> Void) -> Void
@@ -1307,12 +1190,7 @@ private struct RunAppleScriptEditor: View {
 
     var body: some View {
         TextEditor(text: $text)
-            .font(.system(.body, design: .monospaced))
             .frame(minHeight: 100)
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(.separator, lineWidth: 1)
-            )
             .onAppear { text = action.scriptBody }
             .onChange(of: text) { _, newValue in
                 if newValue != action.scriptBody {
@@ -1334,20 +1212,19 @@ private struct DelayEditor: View {
     @State private var initialized = false
 
     var body: some View {
-        HStack {
-            TextField("Seconds", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 80)
-                .focused($isFocused)
-                .onChange(of: action.delaySeconds) { _, _ in
-                    if !isFocused { syncFromModel() }
-                }
-                .onChange(of: isFocused) { _, focused in
-                    if !focused { commitToModel() }
-                }
-            Text("s")
-                .foregroundStyle(.secondary)
+        LabeledContent("Wait") {
+            HStack {
+                TextField("Seconds", text: $text)
+                    .labelsHidden()
+                    .focused($isFocused)
+                    .onChange(of: action.delaySeconds) { _, _ in
+                        if !isFocused { syncFromModel() }
+                    }
+                    .onChange(of: isFocused) { _, focused in
+                        if !focused { commitToModel() }
+                    }
+                Text("seconds")
+            }
         }
         .onAppear { syncFromModel() }
     }
@@ -1377,17 +1254,13 @@ private struct DelayEditor: View {
 private struct ExecuteNamedTriggerEditor: View {
     let action: Action
     let onChange: ((inout Action) -> Void) -> Void
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        Group {
             TextField("Trigger name (e.g. my_subroutine)", text: nameBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
 
             Text("Executes a manipulator that has this trigger name. Make sure the target manipulator is enabled.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1404,17 +1277,14 @@ private struct ExecuteNamedTriggerEditor: View {
 private struct SendUserCommandEditor: View {
     let action: Action
     let onChange: ((inout Action) -> Void) -> Void
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        Group {
             TextField("User command", text: commandBinding, axis: .vertical)
                 .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
 
             Text("Executes a user-defined command via /bin/sh -c.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1430,38 +1300,22 @@ struct AdditionalTriggerCard: View {
     @ObservedObject var store: RemapStore
     let manipulator: Manipulator
     let trigger: AdditionalTrigger
-    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        DisclosureGroup {
+            AdditionalTriggerEditorView(store: store, manipulator: manipulator, trigger: trigger)
+        } label: {
             HStack {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
+                Label("Extra trigger", systemImage: "arrow.triangle.branch")
                 Text(trigger.trigger.displayLabel)
-                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
-                Button {
-                    isExpanded.toggle()
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.borderless)
-                Button(role: .destructive) {
+                Button("Delete", role: .destructive) {
                     store.removeAdditionalTrigger(trigger.id, from: manipulator.id)
-                } label: {
-                    Image(systemName: "xmark")
-                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.borderless)
-            }
-            if isExpanded {
-                AdditionalTriggerEditorView(store: store, manipulator: manipulator, trigger: trigger)
             }
         }
-        .padding(8)
     }
 }
 
@@ -1471,20 +1325,19 @@ private struct AdditionalTriggerEditorView: View {
     let trigger: AdditionalTrigger
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        Group {
             Picker("Type", selection: keyTypeBinding) {
                 ForEach(TriggerKeyType.allCases) { type in
                     Text(type.rawValue).tag(type)
                 }
             }
-            .labelsHidden()
             .pickerStyle(.segmented)
 
             switch trigger.trigger.keyType {
             case .keyboard:
                 if trigger.trigger.steps.isEmpty {
                     Text("No keys recorded")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(trigger.trigger.steps.enumerated()), id: \.offset) { index, step in
@@ -1499,12 +1352,16 @@ private struct AdditionalTriggerEditorView: View {
                         }
                     }
                 }
-                Button {
-                    store.startTriggerRecordingForAdditionalTrigger(trigger.id, in: manipulator.id)
-                } label: {
-                    Text("Record")
+                HStack {
+                    Button("Record") {
+                        store.startTriggerRecordingForAdditionalTrigger(trigger.id, in: manipulator.id)
+                    }
+                    KeyPickerMenu { picked in
+                        store.updateAdditionalTrigger(trigger.id, in: manipulator.id) {
+                            $0.trigger.steps = [KeyShortcut(key: picked)]
+                        }
+                    }
                 }
-                .buttonStyle(.borderless)
 
             case .consumer:
                 Picker("Consumer key", selection: consumerKeyBinding) {
@@ -1513,7 +1370,6 @@ private struct AdditionalTriggerEditorView: View {
                         Text(key.label).tag(key.rawValue)
                     }
                 }
-                .labelsHidden()
 
             case .pointing:
                 Picker("Mouse button", selection: pointingButtonBinding) {
@@ -1522,16 +1378,13 @@ private struct AdditionalTriggerEditorView: View {
                         Text(btn.label).tag(btn.rawValue)
                     }
                 }
-                .labelsHidden()
 
             case .typedString:
                 TextField("Match string", text: stringTriggerBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
 
             case .any:
                 Text("Matches any key press")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
@@ -1601,7 +1454,6 @@ private struct WindowActionEditor: View {
                 Text(kind.rawValue).tag(kind)
             }
         }
-        .pickerStyle(.menu)
     }
 
     private var kindBinding: Binding<WindowActionKind> {
@@ -1617,16 +1469,15 @@ private struct TransformTextEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        Group {
             Picker("Transform", selection: kindBinding) {
                 ForEach(TextTransformKind.allCases) { kind in
                     Text(kind.rawValue).tag(kind)
                 }
             }
-            .pickerStyle(.menu)
             Text("Transforms the current clipboard text in place.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1643,11 +1494,11 @@ private struct SetVolumeEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        HStack {
-            Slider(value: volumeBinding, in: 0...100, step: 5)
-            Text("\(action.numberValue ?? 50)%")
-                .font(.caption.monospacedDigit())
-                .frame(width: 40, alignment: .trailing)
+        LabeledContent("Volume") {
+            HStack {
+                Slider(value: volumeBinding, in: 0...100, step: 5)
+                Text("\(action.numberValue ?? 50)%")
+            }
         }
     }
 
@@ -1664,20 +1515,12 @@ private struct CalculateExpressionEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                TextField("Variable name", text: nameBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                Text("=")
-                    .foregroundStyle(.secondary)
-                TextField("2 + 3 * 4", text: expressionBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-            }
+        Group {
+            TextField("Variable name", text: nameBinding)
+            TextField("Expression (e.g. 2 + 3 * 4)", text: expressionBinding)
             Text("Evaluates the expression (NSExpression syntax) and stores the result in the variable.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1695,16 +1538,9 @@ private struct StepVariableEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        HStack {
+        Group {
             TextField("Variable name", text: nameBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-            Text(action.kind == .incrementVariable ? "+" : "−")
-                .foregroundStyle(.secondary)
-            TextField("1", text: stepBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 60)
+            TextField("Step (default 1)", text: stepBinding)
         }
     }
 
@@ -1722,18 +1558,9 @@ private struct HTTPRequestEditor: View {
     let onChange: ((inout Action) -> Void) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextField("https://api.example.com/data", text: urlBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-            HStack {
-                Text("Store response in:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("httpResponse", text: variableBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
-            }
+        Group {
+            TextField("URL", text: urlBinding, prompt: Text("https://api.example.com/data"))
+            TextField("Response variable", text: variableBinding)
         }
     }
 
@@ -1752,9 +1579,7 @@ private struct FilePathEditor: View {
 
     var body: some View {
         HStack {
-            TextField(action.kind == .openFolder ? "~/Documents" : "~/Documents/notes.txt", text: pathBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
+            TextField(action.kind == .openFolder ? "Folder" : "File", text: pathBinding)
             Button("Choose…") {
                 let panel = NSOpenPanel()
                 panel.canChooseFiles = action.kind != .openFolder
@@ -1764,8 +1589,6 @@ private struct FilePathEditor: View {
                     onChange { $0.appPath = url.path }
                 }
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
         }
     }
 
@@ -1784,22 +1607,18 @@ private struct PlaySoundEditor: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        Group {
             HStack {
                 TextField("Sound name or file path", text: soundBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
                 Menu("System") {
                     ForEach(Self.systemSounds, id: \.self) { name in
                         Button(name) { onChange { $0.text = name } }
                     }
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
             }
             Text("A system sound name (e.g. Ping) or a path to a sound file.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
     }
 

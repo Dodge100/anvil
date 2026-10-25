@@ -4,13 +4,15 @@ struct ManipulatorEditorView: View {
     @ObservedObject var store: RemapStore
     let manipulator: Manipulator
     @State private var activeLibrary: ActiveLibrary? = nil
-    @State private var replacingActionID: UUID? = nil
-    @State private var replacingConditionID: UUID? = nil
-    @State private var triggerExpanded = true
-    @State private var conditionsExpanded = true
-    @State private var actionsExpanded = true
-    @State private var parametersExpanded = false
-    @State private var notesExpanded = true
+    /// Where a newly picked action should be appended.
+    @State private var pendingActionTarget: ActionTarget = .direct
+    /// When set, the picked action replaces this existing action.
+    @State private var replacingAction: (target: ActionTarget, id: UUID)? = nil
+    /// Which block a newly picked condition belongs to.
+    @State private var pendingConditionBlock: UUID? = nil
+    /// When set, the picked condition kind replaces this existing condition.
+    @State private var replacingCondition: (blockID: UUID, id: UUID)? = nil
+    @FocusState private var nameFieldFocused: Bool
 
     private enum ActiveLibrary: String, Identifiable {
         case action
@@ -21,29 +23,35 @@ struct ManipulatorEditorView: View {
 
     var body: some View {
         editorContent
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
             .sheet(item: $activeLibrary) { library in
                 switch library {
                 case .action:
                     ActionLibraryBrowser(isPresented: sheetBinding) { kind in
-                        if let replaceID = replacingActionID {
-                            store.updateAction(replaceID, in: manipulator.id) { $0.kind = kind }
-                            replacingActionID = nil
+                        if let replacing = replacingAction {
+                            switch replacing.target {
+                            case .direct:
+                                store.updateAction(replacing.id, in: manipulator.id) { $0.kind = kind }
+                            case .block(let blockID, let side):
+                                store.updateTreeAction(replacing.id, in: manipulator.id) { $0.kind = kind }
+                            }
+                            replacingAction = nil
                         } else {
-                            store.updateManipulator(manipulator.id) { $0.actions.append(Action(kind: kind)) }
+                            switch pendingActionTarget {
+                            case .direct:
+                                store.addAction(kind, to: manipulator.id)
+                            case .block(let blockID, let side):
+                                store.addTreeAction(manipulator.id, to: blockID, in: side.keyPath, kind: kind)
+                            }
                         }
                     }
                 case .condition:
                     ConditionLibraryBrowser(isPresented: sheetBinding) { kind in
-                        if let replaceID = replacingConditionID {
-                            store.updateCondition(replaceID, in: manipulator.id) { $0.kind = kind }
-                            replacingConditionID = nil
-                        } else {
-                            store.updateManipulator(manipulator.id) {
-                                var condition = Condition()
-                                condition.kind = kind
-                                $0.conditions.append(condition)
-                            }
+                        if let replacing = replacingCondition {
+                            store.updateBlockCondition(manipulator.id, conditionID: replacing.id, inBlock: replacing.blockID) { $0.kind = kind }
+                            replacingCondition = nil
+                        } else if let blockID = pendingConditionBlock {
+                            store.addBlockCondition(manipulator.id, to: blockID, kind: kind)
+                            pendingConditionBlock = nil
                         }
                     }
                 }
@@ -61,141 +69,245 @@ struct ManipulatorEditorView: View {
 
     private var editorContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
                 headerSection
-                
-                // Trigger card
-                EditorCard {
-                    triggerSection
-                }
-                
-                // Conditions card
-                EditorCard {
-                    conditionsSection
-                }
-                
-                // Actions card
-                EditorCard {
-                    actionsSection
-                }
-                
-                // Parameters card
-                EditorCard {
-                    parametersSection
-                }
-                
-                // Notes card
-                EditorCard {
-                    notesSection
-                }
+                triggerSection
+                conditionsSection
+                actionsSection
+                organizationSection
+                advancedSection
             }
-            .padding(16)
-            .frame(maxWidth: 720, alignment: .center)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    // MARK: - Trigger
 
+    private var triggerSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Trigger type", selection: unifiedTriggerTypeBinding) {
+                ForEach(UnifiedTriggerType.allCases) { type in
+                    Text(type.rawValue).tag(type)
+                }
+            }
+            .labelsHidden()
 
-    // MARK: - Sections
+            switch unifiedTriggerType {
+            case .keyboard:
+                KeyboardTriggerEditor(store: store, manipulator: manipulator)
+            case .consumer:
+                ConsumerTriggerEditor(store: store, manipulator: manipulator)
+            case .mouseButton:
+                PointingTriggerEditor(store: store, manipulator: manipulator)
+            case .typedString:
+                TypedStringTriggerEditor(store: store, manipulator: manipulator)
+            case .anyKey, .mouseMotionToScroll:
+                EmptyView()
+            }
+
+            Text(triggerSectionFooter)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Conditions
+
+    @ViewBuilder
+    private var conditionsSection: some View {
+        if !manipulator.usesConditionalBranches {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("No conditions. This manipulator fires in any context.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Add if condition") {
+                    store.convertToConditional(manipulator.id)
+                }
+            }
+        } else if let root = manipulator.rootBlock {
+            NestedBranchSection(
+                store: store,
+                manipulator: manipulator,
+                root: root,
+                onAddCondition: { blockID in
+                    pendingConditionBlock = blockID
+                    withAnimation { activeLibrary = .condition }
+                },
+                onReplaceCondition: { blockID, conditionID in
+                    replacingCondition = (blockID: blockID, id: conditionID)
+                    withAnimation { activeLibrary = .condition }
+                },
+                onAddAction: { blockID, side in
+                    pendingActionTarget = .block(blockID: blockID, side: side)
+                    withAnimation { activeLibrary = .action }
+                },
+                onReplaceAction: { blockID, side, actionID in
+                    replacingAction = (target: .block(blockID: blockID, side: side), id: actionID)
+                    withAnimation { activeLibrary = .action }
+                },
+                onExitBranchMode: {
+                    store.exitConditionalMode(manipulator.id)
+                }
+            )
+        }
+    }
+
+    // MARK: - Actions
+
+    @ViewBuilder
+    private var actionsSection: some View {
+        // In conditional mode the actions live inside the if/elif/else branches.
+        if !manipulator.usesConditionalBranches {
+            VStack(alignment: .leading, spacing: 8) {
+                if manipulator.actions.isEmpty {
+                    Text("No actions. Add one to make this manipulator do something.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(manipulator.actions) { action in
+                        ActionStepRow(
+                            store: store,
+                            action: action,
+                            onChange: { transform in
+                                store.updateAction(action.id, in: manipulator.id, transform)
+                            },
+                            onDelete: {
+                                store.removeAction(action.id, from: manipulator.id)
+                            },
+                            onChangeKind: {
+                                replacingAction = (target: .direct, id: action.id)
+                                withAnimation { activeLibrary = .action }
+                            },
+                            onMoveUp: {
+                                moveAction(action: action, up: true)
+                            },
+                            onMoveDown: {
+                                moveAction(action: action, up: false)
+                            },
+                            onDuplicate: {
+                                store.duplicateAction(action.id, in: manipulator.id)
+                            }
+                        )
+                    }
+                }
+                Button("Add action") {
+                    pendingActionTarget = .direct
+                    withAnimation { activeLibrary = .action }
+                }
+            }
+        }
+    }
+
+    // MARK: - Organization
+
+    private var organizationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Menu {
+                    Button("None") {
+                        store.updateManipulatorCosmetic(manipulator.id) { $0.folder = "" }
+                    }
+                    Divider()
+                    ForEach(store.allFolders, id: \.self) { folderName in
+                        Button(folderName) {
+                            store.updateManipulatorCosmetic(manipulator.id) { $0.folder = folderName }
+                        }
+                    }
+                    Divider()
+                    Button("New Folder…") {
+                        let alert = NSAlert()
+                        alert.messageText = "New Folder"
+                        alert.informativeText = "Enter a name for the new folder"
+                        alert.addButton(withTitle: "OK")
+                        alert.addButton(withTitle: "Cancel")
+                        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+                        alert.accessoryView = textField
+                        textField.becomeFirstResponder()
+                        let response = alert.runModal()
+                        if response == .alertFirstButtonReturn {
+                            let folderName = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !folderName.isEmpty {
+                                store.updateManipulatorCosmetic(manipulator.id) { $0.folder = folderName }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(manipulator.folder.isEmpty ? "No folder" : manipulator.folder, systemImage: "folder")
+                }
+
+                TagTokenField(
+                    tags: Binding(
+                        get: { Array(manipulator.tags).sorted() },
+                        set: { newTags in
+                            store.updateManipulatorCosmetic(manipulator.id) { $0.tags = Set(newTags) }
+                        }
+                    ),
+                    completions: store.allTags,
+                    placeholder: "Add tags…"
+                )
+                .frame(height: 22)
+            }
+
+            Toggle("Starred", isOn: Binding(
+                get: { manipulator.isStarred },
+                set: { _ in store.toggleStarred(manipulator.id) }
+            ))
+        }
+    }
+
+    // MARK: - Advanced
+
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !manipulator.trigger.triggerName.isEmpty {
+                let triggerName = manipulator.trigger.triggerName
+                LabeledContent("Named trigger", value: triggerName)
+            } else {
+                TextField("Named trigger", text: triggerNameBinding)
+                    .placeholder(when: triggerNameBinding.wrappedValue.isEmpty) {
+                        Text("Named trigger (optional)").foregroundColor(.secondary)
+                    }
+            }
+            Text("Lets the Execute Named Trigger action fire this manipulator directly.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            ContextualParametersEditor(manipulator: manipulator, parameters: parametersBinding)
+        }
+    }
+
+    // MARK: - Header Section (unchanged)
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
+            HStack {
                 TextField("Name", text: nameBinding)
-                    .font(.title2.weight(.semibold))
-                    .textFieldStyle(.roundedBorder)
-                Spacer()
-                Toggle("", isOn: enabledBinding)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
+                    .font(.title)
                     .labelsHidden()
+                    .focused($nameFieldFocused)
+                Toggle("Enabled", isOn: enabledBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
             }
-            TextField("Folder", text: folderBinding)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
-            TagEditorField(store: store, manipulator: manipulator)
+            TextField("Description", text: notesBinding, axis: .vertical)
+                .lineLimit(2...6)
         }
+        .onAppear { focusNameIfNew() }
+        .onChange(of: manipulator.id) { _, _ in focusNameIfNew() }
     }
 
-    private var triggerSection: some View {
-        CollapsibleStepCard(title: "Trigger", accentColor: .blue, isExpanded: $triggerExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                // Single unified trigger type selector
-                Picker("Type", selection: unifiedTriggerTypeBinding) {
-                    ForEach(UnifiedTriggerType.allCases) { type in
-                        Label(type.rawValue, systemImage: type.icon).tag(type)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-
-                // Description for special types
-                if unifiedTriggerType == .mouseMotionToScroll {
-                    Text("Converts mouse movement into scroll events.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Trigger configuration based on type
-                if unifiedTriggerType != .mouseMotionToScroll {
-                    triggerConfiguration
-                }
-                
-                // Additional triggers
-                additionalTriggersContent
-            }
-        }
-    }
-
-    // MARK: - Additional Triggers (Merged into Trigger Section)
-
-    private var additionalTriggersContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(manipulator.additionalTriggers) { trigger in
-                AdditionalTriggerCard(
-                    store: store,
-                    manipulator: manipulator,
-                    trigger: trigger
-                )
-            }
-            Button {
-                store.addAdditionalTrigger(to: manipulator.id)
-            } label: {
-                Label("Add Another Trigger", systemImage: "plus")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    @ViewBuilder
-    private var triggerConfiguration: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Named trigger (optional, for all types)
-            TextField("Named trigger (optional)", text: triggerNameBinding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .help("If set, this manipulator can be triggered by name from another manipulator's 'Execute Named Trigger' action.")
-
-            // Type-specific trigger editor
-            switch unifiedTriggerType {
-            case .keyboard:
-                keyboardTriggerEditor
-            case .consumer:
-                consumerTriggerEditor
-            case .mouseButton:
-                pointingTriggerEditor
-            case .typedString:
-                typedStringTriggerEditor
-            case .anyKey:
-                Text("Matches any key press.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            case .mouseMotionToScroll:
-                EmptyView()
-            }
+    private func focusNameIfNew() {
+        guard store.focusNameForManipulatorID == manipulator.id else { return }
+        // Defer both the store mutation and the focus change: this runs
+        // during a view update, and publishing then is undefined behaviour
+        // (it can wedge the whole editor).
+        DispatchQueue.main.async {
+            store.focusNameForManipulatorID = nil
+            nameFieldFocused = true
         }
     }
 
@@ -210,17 +322,6 @@ struct ManipulatorEditorView: View {
         case mouseMotionToScroll = "Mouse Motion to Scroll"
 
         var id: String { rawValue }
-
-        var icon: String {
-            switch self {
-            case .keyboard: return "keyboard"
-            case .consumer: return "play.square"
-            case .mouseButton: return "cursorarrow"
-            case .typedString: return "textformat.abc"
-            case .anyKey: return "asterisk"
-            case .mouseMotionToScroll: return "scroll"
-            }
-        }
 
         var manipulatorType: ManipulatorType {
             switch self {
@@ -270,519 +371,32 @@ struct ManipulatorEditorView: View {
         )
     }
 
-    @ViewBuilder
-    private var keyboardTriggerEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(store.isRecordingTrigger
-                 ? "Press the keys in order, then click Done."
-                 : "Record any key combination or sequence you want to trigger this manipulator.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if let simultaneous = manipulator.trigger.simultaneous, simultaneous.isValid {
-                Text("Chord: \(simultaneous.keys.map(\.displayLabel).joined(separator: " + "))")
-                    .font(.system(.body, design: .monospaced))
-                Button("Clear chord") {
-                    store.updateManipulator(manipulator.id) { $0.trigger.simultaneous = nil }
-                }
-                .buttonStyle(.borderless)
-            }
-
-            HStack(spacing: 8) {
-                if store.isRecordingTrigger {
-                    ForEach(Array(store.recordedTriggerSteps.enumerated()), id: \.offset) { index, step in
-                        TriggerStepBadge(step: step) {
-                            store.removeRecordedTriggerStep(at: index)
-                        }
-                    }
-                } else {
-                    if manipulator.trigger.steps.isEmpty {
-                        Text("Not recorded")
-                            .foregroundStyle(.secondary)
-                            .font(.system(.body, design: .monospaced))
-                    } else {
-                        ForEach(Array(manipulator.trigger.steps.enumerated()), id: \.offset) { index, step in
-                            TriggerStepBadge(step: step) {
-                                store.removeTriggerStep(at: index, from: manipulator.id)
-                            }
-                        }
-                    }
-                }
-                Spacer()
-            }
-
-            HStack(spacing: 12) {
-                if store.isRecordingTrigger {
-                    Button(role: .destructive) {
-                        store.stopTriggerRecording(save: false)
-                    } label: {
-                        Text("Cancel")
-                    }
-                    Spacer()
-                    Button {
-                        store.stopTriggerRecording(save: true)
-                    } label: {
-                        Text("Done")
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button {
-                        store.startTriggerRecording(for: manipulator.id)
-                    } label: {
-                        Text(manipulator.trigger.steps.isEmpty ? "Record Trigger" : "Re-record")
-                    }
-                    if !manipulator.trigger.steps.isEmpty {
-                        Button(role: .destructive) {
-                            store.updateManipulator(manipulator.id) { $0.trigger.steps.removeAll() }
-                        } label: {
-                            Text("Clear")
-                        }
-                    }
-                }
-            }
-
-            // Modifier info for selected step
-            if let firstStep = manipulator.trigger.steps.first, !firstStep.key.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Modifier matching")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Text("Mandatory:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        modifierChips(for: firstStep.mandatoryModifiers) { mods in
-                            store.updateManipulator(manipulator.id) {
-                                guard $0.trigger.steps.indices.contains(0) else { return }
-                                $0.trigger.steps[0].mandatoryModifiers = mods
-                            }
-                        }
-                    }
-                    HStack(spacing: 8) {
-                        Text("Optional:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        modifierChips(for: firstStep.optionalModifiers) { mods in
-                            store.updateManipulator(manipulator.id) {
-                                guard $0.trigger.steps.indices.contains(0) else { return }
-                                $0.trigger.steps[0].optionalModifiers = mods
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Simultaneous chord trigger
-            if manipulator.trigger.steps.isEmpty {
-                Button("Add simultaneous (chord) trigger") {
-                    store.updateManipulator(manipulator.id) {
-                        $0.trigger.simultaneous = SimultaneousTrigger(keys: [])
-                    }
-                }
-                .buttonStyle(.borderless)
-                .font(.caption)
-            }
-
-            // Hot Key multi-tap / hold configuration
-            if !manipulator.trigger.steps.isEmpty || manipulator.trigger.anyKey {
-                hotKeyTriggerEditor
-            }
-
+    private var triggerSectionFooter: String {
+        switch unifiedTriggerType {
+        case .keyboard:
+            return "Press keys in sequence, or press a chord together."
+        case .consumer:
+            return "Media/consumer keys like brightness and volume."
+        case .mouseButton:
+            return "Mouse buttons like back, forward, or middle click."
+        case .typedString:
+            return "Fire when an exact string of characters is typed."
+        case .anyKey:
+            return "Fire on any key press."
+        case .mouseMotionToScroll:
+            return "Turn mouse movement into scrolling while active."
         }
     }
 
-    private func modifierChips(for selected: Set<ModifierKey>, onChange: @escaping (Set<ModifierKey>) -> Void) -> some View {
-        HStack(spacing: 4) {
-            ForEach(ModifierKey.flagBased, id: \.self) { mod in
-                Button {
-                    var newSet = selected
-                    if newSet.contains(mod) {
-                        newSet.remove(mod)
-                    } else {
-                        newSet.insert(mod)
-                    }
-                    onChange(newSet)
-                } label: {
-                    Text(mod.symbol)
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(selected.contains(mod) ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.1))
-                        .cornerRadius(4)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
+    // MARK: - Actions Section Helpers
 
-    // MARK: - Hot Key trigger configuration
-
-    @ViewBuilder
-    private var hotKeyTriggerEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text("Hot Key Behavior")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Toggle("Enabled", isOn: hotKeyEnabledBinding)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-            }
-
-            if manipulator.trigger.hotKey != nil {
-                VStack(alignment: .leading, spacing: 10) {
-                    // Tap count
-                    HStack(spacing: 8) {
-                        Text("Tap count:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 80, alignment: .trailing)
-                        Stepper(value: hotKeyTapCountBinding, in: 1...5) {
-                            Text("\(manipulator.trigger.hotKey?.tapCount ?? 2)")
-                                .font(.system(.body, design: .monospaced))
-                                .frame(minWidth: 24)
-                        }
-                        .controlSize(.small)
-                        Text("taps\(manipulator.trigger.hotKey?.tapCount ?? 2 > 1 ? " (multi-tap)" : " (single)")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Tap timeout
-                    HStack(spacing: 8) {
-                        Text("Timeout:")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 80, alignment: .trailing)
-                        TextField("ms", value: hotKeyTimeoutBinding, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 70)
-                            .font(.system(.body, design: .monospaced))
-                        Text("ms between taps")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Hold required toggle
-                    Toggle(isOn: hotKeyHoldRequiredBinding) {
-                        Text("Require final tap to be held")
-                            .font(.caption)
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-
-                    if manipulator.trigger.hotKey?.holdRequired == true {
-                        HStack(spacing: 8) {
-                            Text("Hold duration:")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 80, alignment: .trailing)
-                            TextField("ms", value: hotKeyHoldThresholdBinding, formatter: NumberFormatter())
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: 70)
-                                .font(.system(.body, design: .monospaced))
-                            Text("ms")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.leading, 20)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Hot Key Bindings
-
-    private var hotKeyEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { manipulator.trigger.hotKey != nil },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if newValue {
-                        $0.trigger.hotKey = HotKeyTriggerConfig(
-                            tapCount: 2,
-                            tapTimeoutMilliseconds: 400,
-                            holdRequired: false,
-                            holdThresholdMilliseconds: 500
-                        )
-                    } else {
-                        $0.trigger.hotKey = nil
-                    }
-                }
-            }
-        )
-    }
-
-    private var hotKeyTapCountBinding: Binding<Int> {
-        Binding(
-            get: { manipulator.trigger.hotKey?.tapCount ?? 2 },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.hotKey != nil {
-                        $0.trigger.hotKey?.tapCount = max(1, min(newValue, 5))
-                    }
-                }
-            }
-        )
-    }
-
-    private var hotKeyTimeoutBinding: Binding<Int> {
-        Binding(
-            get: { manipulator.trigger.hotKey?.tapTimeoutMilliseconds ?? 400 },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    $0.trigger.hotKey?.tapTimeoutMilliseconds = max(50, newValue)
-                }
-            }
-        )
-    }
-
-    private var hotKeyHoldRequiredBinding: Binding<Bool> {
-        Binding(
-            get: { manipulator.trigger.hotKey?.holdRequired ?? false },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    $0.trigger.hotKey?.holdRequired = newValue
-                }
-            }
-        )
-    }
-
-    private var hotKeyHoldThresholdBinding: Binding<Int> {
-        Binding(
-            get: { manipulator.trigger.hotKey?.holdThresholdMilliseconds ?? 500 },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    $0.trigger.hotKey?.holdThresholdMilliseconds = max(100, newValue)
-                }
-            }
-        )
-    }
-
-    @ViewBuilder
-    private var consumerTriggerEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Select a media/consumer key to trigger this manipulator.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("Consumer key", selection: consumerKeyBinding) {
-                Text("Select...").tag("")
-                ForEach(ConsumerKeyCode.allCases) { key in
-                    Text(key.label).tag(key.rawValue)
-                }
-            }
-            .labelsHidden()
-        }
-    }
-
-    @ViewBuilder
-    private var pointingTriggerEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Select a mouse button to trigger this manipulator.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("Mouse button", selection: pointingButtonBinding) {
-                Text("Select...").tag("")
-                ForEach(PointingButton.allCases) { btn in
-                    Text(btn.label).tag(btn.rawValue)
-                }
-            }
-            .labelsHidden()
-        }
-    }
-
-    private var typedStringTriggerEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Type a string to match.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            // Target string
-            HStack {
-                Text("Match string:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 100, alignment: .trailing)
-                TextField("e.g. teh", text: typedStringBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-            }
-
-            // Match mode picker
-            HStack {
-                Text("Match mode:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 100, alignment: .trailing)
-                Picker("Match mode", selection: typedStringMatchModeBinding) {
-                    ForEach(StringTriggerMatchMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-            }
-
-            // Clear on match toggle
-            Toggle(isOn: typedStringClearOnMatchBinding) {
-                Text("Clear buffer after match")
-                    .font(.caption)
-            }
-
-            // App-specific scope
-            HStack {
-                Text("App scope:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 100, alignment: .trailing)
-                TextField("com.apple.Safari (leave empty for all apps)", text: typedStringAppBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
-            // Timeout slider
-            HStack {
-                Text("Timeout:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 100, alignment: .trailing)
-                Slider(value: typedStringTimeoutBinding, in: 0.5...10, step: 0.5)
-                    .frame(maxWidth: 200)
-                Text(String(format: "%.1fs", manipulator.trigger.stringTrigger?.timeoutSeconds ?? 2.0))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, alignment: .trailing)
-                Text("inactivity clears the buffer")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-
-            // Help text for selected match mode
-            Text(stringTriggerHelpText)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.top, 2)
-        }
-    }
-
-    /// Returns the help text for the currently selected string trigger match mode.
-    private var stringTriggerHelpText: String {
-        manipulator.trigger.stringTrigger?.matchMode.helpText
-            ?? StringTriggerMatchMode.fullMatch.helpText
-    }
-
-    @ViewBuilder
-    private var conditionsSection: some View {
-        CollapsibleStepCard(title: "Only if", accentColor: .orange, isExpanded: $conditionsExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                if manipulator.conditions.isEmpty {
-                    Text("No conditions. This manipulator will fire in any context.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                } else {
-                    ForEach(manipulator.conditions) { condition in
-                        ConditionStepRow(
-                            condition: condition,
-                            onChange: { transform in
-                                store.updateCondition(condition.id, in: manipulator.id, transform)
-                            },
-                            onDelete: {
-                                store.removeCondition(condition.id, from: manipulator.id)
-                            },
-                            onChangeKind: {
-                                replacingConditionID = condition.id
-                                withAnimation { activeLibrary = .condition }
-                            }
-                        )
-                        .cardStyle()
-                        if condition.id != manipulator.conditions.last?.id {
-                            Divider().padding(.leading, 36)
-                        }
-                    }
-                }
-                Button {
-                    withAnimation { activeLibrary = .condition }
-                } label: {
-                    Label("Add condition", systemImage: "plus.circle")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 4)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var actionsSection: some View {
-        CollapsibleStepCard(title: "Do", accentColor: .green, isExpanded: $actionsExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                if manipulator.actions.isEmpty {
-                    Text("No actions. Add one to make this manipulator do something.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                } else {
-                    ForEach(manipulator.actions) { action in
-                        ActionStepRow(
-                            store: store,
-                            action: action,
-                            onChange: { transform in
-                                store.updateAction(action.id, in: manipulator.id, transform)
-                            },
-                            onDelete: {
-                                store.removeAction(action.id, from: manipulator.id)
-                            },
-                            onChangeKind: {
-                                replacingActionID = action.id
-                                withAnimation { activeLibrary = .action }
-                            }
-                        )
-                        .cardStyle()
-                        if action.id != manipulator.actions.last?.id {
-                            Divider().padding(.leading, 36)
-                        }
-                    }
-                }
-                Button {
-                    withAnimation { activeLibrary = .action }
-                } label: {
-                    Label("Add action", systemImage: "plus.circle")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .padding(.top, 4)
-            }
-        }
-    }
-
-    private var parametersSection: some View {
-        CollapsibleStepCard(title: "Parameters", accentColor: .purple, isExpanded: $parametersExpanded) {
-            ManipulatorParametersEditor(
-                parameters: manipulator.parameters,
-                onChange: { newParams in
-                    store.updateManipulator(manipulator.id) { $0.parameters = newParams }
-                }
-            )
-        }
-    }
-
-    private var notesSection: some View {
-        CollapsibleStepCard(title: "Description", accentColor: .gray, isExpanded: $notesExpanded) {
-            TextField("Optional notes for this manipulator", text: notesBinding, axis: .vertical)
-                .lineLimit(2...6)
-                .textFieldStyle(.roundedBorder)
-                .font(.body)
-        }
+    private func moveAction(action: Action, up: Bool) {
+        guard let index = manipulator.actions.firstIndex(where: { $0.id == action.id }) else { return }
+        let newIndex = up ? index - 1 : index + 1
+        guard newIndex >= 0 && newIndex < manipulator.actions.count else { return }
+        let fromIndex = IndexSet(integer: index)
+        let toIndex = newIndex > index ? newIndex + 1 : newIndex // because move(from:to:) adjusts for removal
+        store.moveAction(from: fromIndex, to: toIndex, in: manipulator.id)
     }
 
     // MARK: - Bindings
@@ -798,13 +412,6 @@ struct ManipulatorEditorView: View {
         Binding(
             get: { manipulator.isEnabled },
             set: { newValue in store.updateManipulator(manipulator.id) { $0.isEnabled = newValue } }
-        )
-    }
-
-    private var folderBinding: Binding<String> {
-        Binding(
-            get: { manipulator.folder },
-            set: { newValue in store.updateManipulatorCosmetic(manipulator.id) { $0.folder = newValue } }
         )
     }
 
@@ -824,162 +431,20 @@ struct ManipulatorEditorView: View {
         )
     }
 
-    private var consumerKeyBinding: Binding<String> {
+    private var parametersBinding: Binding<ManipulatorParameters> {
         Binding(
-            get: { manipulator.trigger.steps.first?.key ?? "" },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    $0.trigger.steps = newValue.isEmpty ? [] : [KeyShortcut(key: newValue)]
-                }
-            }
-        )
-    }
-
-    private var pointingButtonBinding: Binding<String> {
-        Binding(
-            get: { manipulator.trigger.steps.first?.key ?? "" },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    $0.trigger.steps = newValue.isEmpty ? [] : [KeyShortcut(key: newValue)]
-                }
-            }
-        )
-    }
-
-    /// Binding to the typed-string trigger string value.
-    private var typedStringBinding: Binding<String> {
-        Binding(
-            get: { manipulator.trigger.stringTrigger?.string ?? "" },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.stringTrigger == nil {
-                        $0.trigger.stringTrigger = StringTriggerOptions()
-                    }
-                    $0.trigger.stringTrigger?.string = newValue
-                }
-            }
-        )
-    }
-
-    /// Binding to the typed-string match mode.
-    private var typedStringMatchModeBinding: Binding<StringTriggerMatchMode> {
-        Binding(
-            get: { manipulator.trigger.stringTrigger?.matchMode ?? .fullMatch },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.stringTrigger == nil {
-                        $0.trigger.stringTrigger = StringTriggerOptions()
-                    }
-                    $0.trigger.stringTrigger?.matchMode = newValue
-                }
-            }
-        )
-    }
-
-    /// Binding to the typed-string timeout (seconds).
-    private var typedStringTimeoutBinding: Binding<Double> {
-        Binding(
-            get: { manipulator.trigger.stringTrigger?.timeoutSeconds ?? 2.0 },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.stringTrigger == nil {
-                        $0.trigger.stringTrigger = StringTriggerOptions()
-                    }
-                    $0.trigger.stringTrigger?.timeoutSeconds = max(0.1, newValue)
-                }
-            }
-        )
-    }
-
-    /// Binding to the typed-string clearOnMatch toggle.
-    private var typedStringClearOnMatchBinding: Binding<Bool> {
-        Binding(
-            get: { manipulator.trigger.stringTrigger?.clearOnMatch ?? true },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.stringTrigger == nil {
-                        $0.trigger.stringTrigger = StringTriggerOptions()
-                    }
-                    $0.trigger.stringTrigger?.clearOnMatch = newValue
-                }
-            }
-        )
-    }
-
-    /// Binding to the typed-string app bundle ID.
-    private var typedStringAppBinding: Binding<String> {
-        Binding(
-            get: { manipulator.trigger.stringTrigger?.appBundleID ?? "" },
-            set: { newValue in
-                store.updateManipulator(manipulator.id) {
-                    if $0.trigger.stringTrigger == nil {
-                        $0.trigger.stringTrigger = StringTriggerOptions()
-                    }
-                    $0.trigger.stringTrigger?.appBundleID = newValue
-                }
+            get: { manipulator.parameters },
+            set: { newParams in
+                store.updateManipulator(manipulator.id) { $0.parameters = newParams }
             }
         )
     }
 }
 
-// MARK: - Step card shell
+// MARK: - Shared section containers
+// EditorCard and CollapsibleStepCard remain for Menu Bar editor use.
 
-// MARK: - Editor Card (used to wrap each section)
-
-struct EditorCard<Content: View>: View {
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        content()
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(.separator.opacity(0.5), lineWidth: 1)
-            )
-    }
-}
-
-// MARK: - Card style modifier (for individual rows)
-
-struct CardStyleModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(8)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(.separator.opacity(0.3), lineWidth: 0.5)
-            )
-    }
-}
-
-extension View {
-    func cardStyle() -> some View {
-        modifier(CardStyleModifier())
-    }
-}
-
-// MARK: - Step card shell
-
-struct StepCard<Content: View>: View {
-    let title: String
-    var accentColor: Color = .secondary
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-// MARK: - Collapsible Step Card
+// MARK: - Collapsible Step Card (native DisclosureGroup)
 
 struct CollapsibleStepCard<Content: View>: View {
     let title: String
@@ -987,65 +452,496 @@ struct CollapsibleStepCard<Content: View>: View {
     @Binding var isExpanded: Bool
     @ViewBuilder var content: () -> Content
 
+    init(title: String, accentColor: Color = .secondary, isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self._isExpanded = isExpanded
+        self.content = content
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-
-                    Spacer()
-                }
-                .contentShape(Rectangle())
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                content()
             }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    content()
-                }
-                .padding(.top, 8)
-            }
+            .padding(.top, 8)
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// MARK: - Add step menu
+// MARK: - Editor Card (Apple Settings-style section)
 
-struct AddStepMenu: View {
-    struct Item: Identifiable, Hashable {
-        let id: String
-        let title: String
-    }
-
-    let label: String
-    let items: [Item]
-    let action: (Item) -> Void
+struct EditorCard<Content: View>: View {
+    @ViewBuilder var content: () -> Content
 
     var body: some View {
-        Menu {
-            ForEach(items) { item in
+        content()
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - Conditional branch target
+
+/// Where a newly picked action from the library should be appended.
+enum ActionTarget: Hashable {
+    case direct
+    case block(blockID: UUID, side: BlockSide)
+}
+
+/// Which half of a block's body a step belongs to: the `then` list or the
+/// `else` list. `otherwise` avoids reserving the `else` keyword as an ID.
+enum BlockSide: String, Hashable {
+    case then
+    case otherwise
+
+    var keyPath: WritableKeyPath<BranchBlock, [BranchStep]> {
+        switch self {
+        case .then: return \.thenSteps
+        case .otherwise: return \.elseSteps
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .then: return "Then"
+        case .otherwise: return "Else"
+        }
+    }
+}
+
+/// Scope options shared by the root block header (same list the branch cards used).
+func blockScopeOptions(for manipulator: Manipulator, current: BranchTriggerScope) -> [(title: String, scope: BranchTriggerScope)] {
+    var options: [(String, BranchTriggerScope)] = [
+        ("Any trigger", .any),
+        ("Main trigger", .main)
+    ]
+    for (idx, additional) in manipulator.additionalTriggers.enumerated() {
+        let label = additional.trigger.displayLabel
+        let title = label.isEmpty || label == "Not recorded"
+            ? "Extra trigger \(idx + 1)"
+            : "Extra \(idx + 1): \(label)"
+        options.append((String(title.prefix(28)), .additional(id: additional.id)))
+    }
+    // Keep the current selection visible if its trigger was deleted.
+    if case .additional(let id) = current,
+       !manipulator.additionalTriggers.contains(where: { $0.id == id }) {
+        options.append(("Removed trigger", current))
+    }
+    return options
+}
+
+// MARK: - Hierarchical if / else (code-editor style)
+
+/// The condition section active state: renders the root `if` block and all
+/// nested blocks recursively, with indentation, a connecting gutter, and
+/// monospaced if/else keywords — like a code editor.
+struct NestedBranchSection: View {
+    @ObservedObject var store: RemapStore
+    let manipulator: Manipulator
+    let root: BranchBlock
+    var onAddCondition: (UUID) -> Void
+    var onReplaceCondition: (_ blockID: UUID, _ conditionID: UUID) -> Void
+    var onAddAction: (_ blockID: UUID, _ side: BlockSide) -> Void
+    var onReplaceAction: (_ blockID: UUID, _ side: BlockSide, _ actionID: UUID) -> Void
+    var onExitBranchMode: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            BranchBlockView(
+                store: store,
+                manipulator: manipulator,
+                block: root,
+                isRoot: true,
+                depth: 0,
+                onAddCondition: onAddCondition,
+                onReplaceCondition: onReplaceCondition,
+                onAddAction: onAddAction,
+                onReplaceAction: onReplaceAction
+            )
+
+            HStack(spacing: 12) {
                 Button {
-                    action(item)
+                    store.addNestedBlock(manipulator.id, to: root.id, in: \.thenSteps)
                 } label: {
-                    Text(item.title)
+                    Label("Add if inside", systemImage: "plus.square.on.square")
+                }
+                .help("Nest an if block inside the root.")
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    onExitBranchMode()
+                } label: {
+                    Text("Back to simple mode")
+                }
+                .help("Flatten all branching back into a plain action list.")
+            }
+        }
+    }
+}
+
+/// One `if` block, rendered like a code block: a keyword row, an indented
+/// body with a gutter, and an `else` half. Nested blocks recurse.
+struct BranchBlockView: View {
+    @ObservedObject var store: RemapStore
+    let manipulator: Manipulator
+    let block: BranchBlock
+    let isRoot: Bool
+    let depth: Int
+    var onAddCondition: (UUID) -> Void
+    var onReplaceCondition: (_ blockID: UUID, _ conditionID: UUID) -> Void
+    var onAddAction: (_ blockID: UUID, _ side: BlockSide) -> Void
+    var onReplaceAction: (_ blockID: UUID, _ side: BlockSide, _ actionID: UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            headerRow
+            Divider().opacity(isRoot ? 0 : 0.25)
+            codeBody
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(blockBackground)
+        .overlay(blockOutline)
+    }
+
+    // MARK: pieces
+
+    private var headerRow: some View {
+        HStack(spacing: 8) {
+            KeywordChip("if", tone: isRoot ? .title : .comment)
+
+            if block.conditions.isEmpty {
+                Text("always")
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            Menu {
+                ForEach(blockScopeOptions(for: manipulator, current: block.triggerScope), id: \.scope) { option in
+                    Button(option.title) { store.setBlockTriggerScope(manipulator.id, blockID: block.id, scope: option.scope) }
+                }
+            } label: {
+                Label(scopeLabel(block.triggerScope), systemImage: "scope")
+                    .font(.caption2)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Only run this block for a specific trigger, or for any trigger.")
+            .accessibilityLabel("Trigger scope for this block")
+
+            if block.conditions.count > 1 {
+                Picker("Match", selection: matchAllBinding) {
+                    Text("All").tag(true)
+                    Text("Any").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .help("Require all conditions, or any of them.")
+            }
+
+            Spacer(minLength: 8)
+
+            if isRoot {
+                Button {
+                    onAddCondition(block.id)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Add condition to this block")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.quaternary.opacity(0.35))
+        .contextMenu {
+            if !isRoot {
+                Button("Add condition…") { onAddCondition(block.id) }
+                Divider()
+                Button("Unwrap (keep then steps)") {
+                    store.unwrapTreeBlock(block.id, in: manipulator.id)
+                }
+                Button("Delete block and contents", role: .destructive) {
+                    store.deleteTreeBlock(block.id, in: manipulator.id)
                 }
             }
-        } label: {
-            Text(label).font(.body)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+    }
+
+    /// Indented body with a connecting gutter line, split into then/else.
+    private var codeBody: some View {
+        HStack(alignment: .top, spacing: 0) {
+            // Gutter: connects the block header (Xcode-style code line) down the body.
+            Rectangle()
+                .fill(.quaternary)
+                .frame(width: 2)
+                .padding(.leading, 18)
+                .padding(.vertical, 6)
+
+            VStack(alignment: .leading, spacing: 10) {
+                conditionRows
+
+                StepList(
+                    store: store,
+                    manipulator: manipulator,
+                    blockID: block.id,
+                    side: .then,
+                    steps: block.thenSteps,
+                    indent: depth + 1,
+                    onAddCondition: onAddCondition,
+                    onReplaceCondition: onReplaceCondition,
+                    onAddAction: onAddAction,
+                    onReplaceAction: onReplaceAction
+                )
+
+                if !block.elseSteps.isEmpty {
+                    HStack(spacing: 6) {
+                        KeywordChip("else", tone: .comment)
+                        Rectangle().fill(.quaternary).frame(height: 1)
+                    }
+                    .padding(.trailing, 6)
+
+                    StepList(
+                        store: store,
+                        manipulator: manipulator,
+                        blockID: block.id,
+                        side: .otherwise,
+                        steps: block.elseSteps,
+                        indent: depth + 1,
+                        onAddCondition: onAddCondition,
+                        onReplaceCondition: onReplaceCondition,
+                        onAddAction: onAddAction,
+                        onReplaceAction: onReplaceAction
+                    )
+                }
+            }
+            .padding(.leading, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var conditionRows: some View {
+        if !block.conditions.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(block.conditions) { condition in
+                    HStack(alignment: .top, spacing: 6) {
+                        Rectangle()
+                            .fill(.quaternary.opacity(0.6))
+                            .frame(width: 2, height: 18)
+                        ConditionStepRow(
+                            condition: condition,
+                            onChange: { transform in
+                                store.updateBlockCondition(manipulator.id, conditionID: condition.id, inBlock: block.id, transform)
+                            },
+                            onDelete: {
+                                store.removeBlockCondition(manipulator.id, conditionID: condition.id, fromBlock: block.id)
+                            },
+                            onChangeKind: {
+                                onReplaceCondition(block.id, condition.id)
+                            }
+                        )
+                    }
+                }
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private var blockBackground: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(.background.secondary)
+    }
+
+    private var blockOutline: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(.quinary, lineWidth: 1)
+    }
+
+    private var matchAllBinding: Binding<Bool> {
+        Binding(
+            get: { block.matchAll },
+            set: { newValue in
+                store.setBlockMatchAll(manipulator.id, blockID: block.id, matchAll: newValue)
+            }
+        )
+    }
+}
+
+/// A monospaced `if` / `else` keyword, styled like a code token.
+struct KeywordChip: View {
+    let keyword: String
+    let tone: Tone
+
+    enum Tone {
+        case title
+        case comment
+    }
+
+    init(_ keyword: String, tone: Tone = .title) {
+        self.keyword = keyword
+        self.tone = tone
+    }
+
+    var body: some View {
+        Text(keyword)
+            .font(.system(.footnote, design: .monospaced).weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .foregroundStyle(tone == .title ? Color.pink : Color.gray)
+    }
+}
+
+private func scopeLabel(_ scope: BranchTriggerScope) -> String {
+    switch scope {
+    case .any: return "Any trigger"
+    case .main: return "Main trigger"
+    case .additional: return "Extra trigger"
+    }
+}
+
+/// A mixed list of steps (actions and nested blocks) inside a block,
+/// plus the row of add-buttons that operates on that list.
+struct StepList: View {
+    @ObservedObject var store: RemapStore
+    let manipulator: Manipulator
+    let blockID: UUID
+    let side: BlockSide
+    let steps: [BranchStep]
+    let indent: Int
+    var onAddCondition: (UUID) -> Void
+    var onReplaceCondition: (_ blockID: UUID, _ conditionID: UUID) -> Void
+    var onAddAction: (_ blockID: UUID, _ side: BlockSide) -> Void
+    var onReplaceAction: (_ blockID: UUID, _ side: BlockSide, _ actionID: UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if steps.isEmpty {
+                Text(side == .then ? "No steps in this branch yet." : "Nothing runs on else.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                    BranchStepRowView(
+                        store: store,
+                        manipulator: manipulator,
+                        step: step,
+                        blockID: blockID,
+                        side: side,
+                        index: index,
+                        depth: indent,
+                        onAddCondition: onAddCondition,
+                        onReplaceCondition: onReplaceCondition,
+                        onAddAction: onAddAction,
+                        onReplaceAction: onReplaceAction
+                    )
+                    if index < steps.count - 1 {
+                        Divider().opacity(0.4)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    onAddAction(blockID, side)
+                } label: {
+                    Label(side.label + " action", systemImage: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+                .font(.footnote)
+
+                Menu {
+                    Button("Add condition to this block…") { onAddCondition(blockID) }
+                    Button("Nest an if block here") {
+                        store.addNestedBlock(manipulator.id, to: blockID, in: side.keyPath)
+                    }
+                } label: {
+                    Label("More…", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .font(.footnote)
+                .fixedSize()
+            }
+        }
+    }
+}
+
+/// Renders one step: an action row, or a nested block (recursion).
+struct BranchStepRowView: View {
+    @ObservedObject var store: RemapStore
+    let manipulator: Manipulator
+    let step: BranchStep
+    let blockID: UUID
+    let side: BlockSide
+    let index: Int
+    let depth: Int
+    var onAddCondition: (UUID) -> Void
+    var onReplaceCondition: (_ blockID: UUID, _ conditionID: UUID) -> Void
+    var onAddAction: (_ blockID: UUID, _ side: BlockSide) -> Void
+    var onReplaceAction: (_ blockID: UUID, _ side: BlockSide, _ actionID: UUID) -> Void
+
+    var body: some View {
+        switch step {
+        case .action(let action):
+            ActionStepRow(
+                store: store,
+                action: action,
+                onChange: { transform in
+                    store.updateTreeAction(action.id, in: manipulator.id, transform)
+                },
+                onDelete: {
+                    store.removeTreeStep(action.id, from: manipulator.id)
+                },
+                onChangeKind: {
+                    onReplaceAction(blockID, side, action.id)
+                },
+                onMoveUp: index > 0 ? { move(offset: -1) } : nil,
+                onMoveDown: { move(offset: 1) },
+                onDuplicate: {
+                    store.duplicateTreeAction(action.id, in: manipulator.id)
+                }
+            )
+            .contextMenu {
+                Button("Wrap in if…") {
+                    store.wrapTreeStepInBlock(action.id, in: manipulator.id)
+                }
+                Divider()
+                Button("Move Up", action: { move(offset: -1) })
+                Button("Move Down", action: { move(offset: 1) })
+                Divider()
+                Button("Delete", role: .destructive) {
+                    store.removeTreeStep(action.id, from: manipulator.id)
+                }
+            }
+        case .block(let nested):
+            BranchBlockView(
+                store: store,
+                manipulator: manipulator,
+                block: nested,
+                isRoot: false,
+                depth: depth + 1,
+                onAddCondition: onAddCondition,
+                onReplaceCondition: onReplaceCondition,
+                onAddAction: onAddAction,
+                onReplaceAction: onReplaceAction
+            )
+            .padding(.top, 2)
+        }
+    }
+
+    private func move(offset: Int) {
+        let adjusted = index + offset
+        guard (0...Int.max).contains(adjusted) else { return }
+        store.moveTreeStep(manipulator.id, in: blockID, side: side.keyPath, fromOffsets: IndexSet(integer: index), toOffset: adjusted)
     }
 }
 
@@ -1056,63 +952,23 @@ struct TriggerStepBadge: View {
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(step.displayLabel)
-                .font(.body.monospaced())
-            Button {
-                onDelete()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2)
-            }
-            .buttonStyle(.borderless)
+        LabeledContent(step.displayLabel) {
+            Button("Remove", role: .destructive, action: onDelete)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
     }
 }
 
-// MARK: - Tag editor field
+// MARK: - Placeholder ViewModifier (for textfield placeholder)
 
-struct TagEditorField: View {
-    @ObservedObject var store: RemapStore
-    let manipulator: Manipulator
-    @State private var newTag: String = ""
-
-    var body: some View {
-        FlowLayout(spacing: 4) {
-            ForEach(manipulator.tags.sorted(), id: \.self) { tag in
-                Button {
-                    store.toggleTag(tag, on: manipulator.id)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(tag).font(.caption)
-                        Image(systemName: "xmark")
-                            .font(.caption2)
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            TextField("Add tag", text: $newTag)
-                .textFieldStyle(.plain)
-                .font(.caption)
-                .frame(minWidth: 60)
-                .onSubmit { addCurrentTag() }
+extension View {
+    func placeholder<Content: View>(
+        when shouldShow: Bool,
+        alignment: Alignment = .leading,
+        @ViewBuilder placeholder: () -> Content
+    ) -> some View {
+        ZStack(alignment: alignment) {
+            placeholder().opacity(shouldShow ? 1 : 0)
+            self
         }
     }
-
-    private func addCurrentTag() {
-        let trimmed = newTag.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        store.updateManipulatorCosmetic(manipulator.id) { $0.tags.insert(trimmed) }
-        newTag = ""
-    }
 }
-
-
-
-

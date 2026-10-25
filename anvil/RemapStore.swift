@@ -10,6 +10,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let menuBarItemsDidChange = Notification.Name("menuBarItemsDidChange")
+
 }
 
 // MARK: - Undo/Redo
@@ -26,6 +27,9 @@ final class RemapStore: ObservableObject {
     @Published var searchText: String = ""
     @Published var selectedTags: Set<String> = []
     @Published var toastMessage: String? = nil
+    /// Transient: when set, the editor focuses the name field of this
+    /// manipulator once (used right after creating one), then clears it.
+    @Published var focusNameForManipulatorID: UUID?
 
     private var toastTask: Task<Void, Never>?
 
@@ -38,10 +42,21 @@ final class RemapStore: ObservableObject {
     @Published private(set) var canRedo = false
     private var undoStack: [UndoSnapshot] = []
     private var redoStack: [UndoSnapshot] = []
+    private var lastCosmeticUndoTime = Date.distantPast
+    private let cosmeticUndoCoalesceWindow: TimeInterval = 1.5
 
     /// Push the current state onto the undo stack before making a mutation.
     /// Automatically discards the redo stack (a new action invalidates redo).
-    private func pushUndo() {
+    /// - Parameter coalesceWindow: if > 0, skip the push when the last push was
+    ///   within this window (used for per-keystroke cosmetic edits).
+    private func pushUndo(coalesceWindow: TimeInterval = 0) {
+        if coalesceWindow > 0 {
+            let now = Date()
+            if now.timeIntervalSince(lastCosmeticUndoTime) < coalesceWindow, !undoStack.isEmpty {
+                return
+            }
+            lastCosmeticUndoTime = now
+        }
         let snapshot = UndoSnapshot(
             manipulators: manipulators,
             selectedManipulatorID: selectedManipulatorID
@@ -109,7 +124,7 @@ final class RemapStore: ObservableObject {
 
     @Published var profiles: [ConfigProfile] = []
     @Published var activeProfileID: UUID {
-        didSet { saveProfilesManifest() }
+        didSet { scheduleSaveProfilesManifest() }
     }
 
     /// The currently active profile object.
@@ -138,11 +153,25 @@ final class RemapStore: ObservableObject {
     private var triggerRecordingMonitor: Any?
     private var triggerRecordingManipulatorID: UUID?
     private var triggerRecordingAdditionalTriggerID: UUID?
+    private var triggerRecordingIsChord = false
     private var toKeyMonitor: Any?
     private var configFileSource: DispatchSourceFileSystemObject?
     private var saveConfigTask: Task<Void, Never>?
     private var applyRemapsTask: Task<Void, Never>?
     private var saveMenuBarItemsTask: Task<Void, Never>?
+    /// When our own last profile save completed. The file watcher ignores
+    /// change events at or before this date (our debounced saves echo back
+    /// through kqueue and must not trigger a reload).
+    private var lastOwnSaveDate = Date.distantPast
+    /// The manipulator list as of our last write to disk. Used to detect
+    /// local edits that have not been flushed yet, so an external write
+    /// can't clobber them.
+    private var lastWrittenManipulators: [Manipulator]?
+    /// Exact bytes of our most recent profile write. File events are matched
+    /// against this by CONTENT (not mtime) so our own echoes can never slip
+    /// past the filter, no matter when the watcher event fires.
+    private var lastWrittenConfigData: Data?
+    private var saveManifestTask: Task<Void, Never>?
 
     static let appSupportURL: URL = {
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -162,6 +191,24 @@ final class RemapStore: ObservableObject {
 
     static let statusURL: URL = appSupportURL.appendingPathComponent("status.json")
     static let globalVarsURL: URL = appSupportURL.appendingPathComponent("global_vars.json")
+
+    private func makeTriggerRecordingMonitor() -> Any? {
+        return NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            guard let shortcut = self.recordedShortcut(from: event) else { return event }
+            // Handle Escape key: if pressed alone with no steps or flags, cancel recording
+            let keyID = self.keyID(from: event)
+            let modifiers = self.modifiers(from: event.modifierFlags)
+            if keyID == "escape" && modifiers.isEmpty && self.recordedTriggerSteps.isEmpty {
+                self.stopTriggerRecording(save: false)
+                return nil
+            }
+            // If steps exist, record Escape as a normal step
+            self.recordedTriggerSteps.append(shortcut)
+            return nil
+        }
+    }
+
 
     init(engine: KeyboardRemapEngine? = nil, daemonMode: Bool = false) {
         self.engine = engine ?? KeyboardRemapEngine()
@@ -263,6 +310,7 @@ final class RemapStore: ObservableObject {
         saveConfigTask?.cancel()
         applyRemapsTask?.cancel()
         saveMenuBarItemsTask?.cancel()
+        saveManifestTask?.cancel()
         // Cancel dispatch source synchronously in deinit
         configFileSource?.cancel()
         configFileSource = nil
@@ -293,19 +341,30 @@ final class RemapStore: ObservableObject {
     }
 
     /// Core filtering logic, extracted for reuse with debounce.
+    /// Uses case-insensitive range matching to avoid lowercased() allocations
+    /// on every manipulator for every keystroke.
     private func computeFilteredManipulators() -> [Manipulator] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasQuery = !query.isEmpty
+        let hasTags = !selectedTags.isEmpty
+        // Fast path: no filter at all — just sort once.
+        if !hasQuery, !hasTags {
+            return manipulators.sorted { lhs, rhs in
+                if lhs.isEnabled != rhs.isEnabled { return lhs.isEnabled && !rhs.isEnabled }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+        }
         return manipulators
             .filter { manipulator in
-                if !selectedTags.isEmpty {
+                if hasTags {
                     let hasAny = !selectedTags.isDisjoint(with: manipulator.tags)
                     if !hasAny { return false }
                 }
-                if query.isEmpty { return true }
-                if manipulator.name.lowercased().contains(query) { return true }
-                if manipulator.notes.lowercased().contains(query) { return true }
-                if manipulator.trigger.displayLabel.lowercased().contains(query) { return true }
-                if manipulator.actions.contains(where: { $0.summary.lowercased().contains(query) }) { return true }
+                if !hasQuery { return true }
+                if manipulator.name.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil { return true }
+                if manipulator.notes.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil { return true }
+                if manipulator.trigger.displayLabel.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil { return true }
+                if manipulator.actions.contains(where: { $0.summary.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil }) { return true }
                 return false
             }
             .sorted { lhs, rhs in
@@ -319,10 +378,48 @@ final class RemapStore: ObservableObject {
         return manipulators.first { $0.id == id }
     }
 
+    /// Look up a manipulator by ID.
+    func manipulator(id: UUID) -> Manipulator? {
+        manipulators.first { $0.id == id }
+    }
+
+    /// Toggle a manipulator's enabled state.
+    func toggleEnabled(_ id: UUID) {
+        updateManipulator(id) { $0.isEnabled.toggle() }
+    }
+
+    /// The manipulator currently being trigger-recorded, if any.
+    /// (Used by the trigger editor to show the in-progress recording.)
+    var editingManipulatorID: UUID? {
+        triggerRecordingManipulatorID
+    }
+
     // MARK: - Selection
 
     func selectManipulator(_ id: UUID?) {
         selectedManipulatorID = id
+    }
+
+    func selectNextManipulator() {
+        guard !debouncedFilteredManipulators.isEmpty else { return }
+        if let current = selectedManipulatorID,
+           let currentIndex = debouncedFilteredManipulators.firstIndex(where: { $0.id == current }) {
+            let nextIndex = min(currentIndex + 1, debouncedFilteredManipulators.count - 1)
+            selectedManipulatorID = debouncedFilteredManipulators[nextIndex].id
+        } else {
+            selectedManipulatorID = debouncedFilteredManipulators.first?.id
+        }
+    }
+
+    func selectPreviousManipulator() {
+        guard !debouncedFilteredManipulators.isEmpty else { return }
+        if let current = selectedManipulatorID,
+           let currentIndex = debouncedFilteredManipulators.firstIndex(where: { $0.id == current }) {
+            let previousIndex = max(currentIndex - 1, 0)
+            selectedManipulatorID = debouncedFilteredManipulators[previousIndex].id
+        } else {
+            selectedManipulatorID = debouncedFilteredManipulators.last?.id
+        }
     }
 
     func toggleTag(_ tag: String) {
@@ -344,6 +441,7 @@ final class RemapStore: ObservableObject {
         let manipulator = Manipulator(name: "New Manipulator")
         manipulators.append(manipulator)
         selectedManipulatorID = manipulator.id
+        focusNameForManipulatorID = manipulator.id
         applyRemaps()
     }
 
@@ -359,12 +457,13 @@ final class RemapStore: ObservableObject {
         copy.additionalTriggers = source.additionalTriggers.map { additional in
             var dup = additional
             dup.id = UUID()
-            dup.conditions = additional.conditions.map { condition in
-                var c = condition
-                c.id = UUID()
-                return c
-            }
             return dup
+        }
+        // Deep-copy conditional block tree (fresh IDs throughout).
+        if let sourceRoot = source.rootBlock {
+            copy.rootBlock = Self.deepCopyBlock(sourceRoot)
+        } else {
+            copy.rootBlock = nil
         }
         if let index = manipulators.firstIndex(where: { $0.id == id }) {
             manipulators.insert(copy, at: index + 1)
@@ -372,11 +471,35 @@ final class RemapStore: ObservableObject {
             manipulators.append(copy)
         }
         selectedManipulatorID = copy.id
+        focusNameForManipulatorID = copy.id
         applyRemaps()
     }
 
-    func deleteManipulator(_ id: UUID) {
-        pushUndo()
+    /// Recursively copy a block tree with fresh IDs everywhere so a duplicated
+    /// manipulator shares no mutable state with its source.
+    private static func deepCopyBlock(_ block: BranchBlock) -> BranchBlock {
+        var copy = block
+        copy.id = UUID()
+        copy.conditions = block.conditions.map { condition in
+            var c = condition
+            c.id = UUID()
+            return c
+        }
+        copy.thenSteps = block.thenSteps.map { deepCopyStep($0) }
+        copy.elseSteps = block.elseSteps.map { deepCopyStep($0) }
+        return copy
+    }
+
+    private static func deepCopyStep(_ step: BranchStep) -> BranchStep {
+        switch step {
+        case .action(let action):
+            return .action(action.deepCopy())
+        case .block(let nested):
+            return .block(deepCopyBlock(nested))
+        }
+    }
+
+    func deleteManipulator(_ id: UUID) {        pushUndo()
         guard let index = manipulators.firstIndex(where: { $0.id == id }) else { return }
         let nextSelection: UUID? = {
             if manipulators.indices.contains(index + 1) {
@@ -398,18 +521,24 @@ final class RemapStore: ObservableObject {
         guard let index = manipulators.firstIndex(where: { $0.id == id }) else { return }
         pushUndo()
         transform(&manipulators[index])
+        // Element-level mutation doesn't trigger @Published (no array setter
+        // runs), so publish explicitly — otherwise the UI only refreshes via
+        // the debounced file-watcher echo, which can revert in-flight edits.
+        objectWillChange.send()
         scheduleApplyRemaps()
     }
 
     /// Update a manipulator without scheduling an engine rebuild.
     /// Use for cosmetic-only edits (name, notes, folder) where routing is unaffected.
+    /// Undo snapshots are coalesced to one per 1.5s so typing doesn't flood the stack.
     func updateManipulatorCosmetic(_ id: UUID, _ transform: (inout Manipulator) -> Void) {
         guard let index = manipulators.firstIndex(where: { $0.id == id }) else { return }
-        pushUndo()
+        pushUndo(coalesceWindow: cosmeticUndoCoalesceWindow)
         transform(&manipulators[index])
         // Bump objectWillChange so SwiftUI re-renders, but skip the expensive
         // routing rebuild + disk write entirely.
         objectWillChange.send()
+        scheduleSaveConfig()
     }
 
     /// Update a manipulator and immediately apply routing (no debounce).
@@ -433,67 +562,468 @@ final class RemapStore: ObservableObject {
         }
     }
 
-    func updateCondition(_ conditionID: UUID, in manipulatorID: UUID, _ transform: (inout Condition) -> Void) {
+
+    // MARK: - Nested condition blocks (if / else)
+
+    /// Convert a simple (unconditional) manipulator into conditional mode by
+    /// moving its direct actions into a root `if` block with one condition
+    /// placeholder for the user to fill in.
+    func convertToConditional(_ manipulatorID: UUID) {
         updateManipulator(manipulatorID) { manipulator in
-            guard let index = manipulator.conditions.firstIndex(where: { $0.id == conditionID }) else { return }
-            transform(&manipulator.conditions[index])
+            guard !manipulator.usesConditionalBranches else { return }
+            manipulator.rootBlock = BranchBlock(
+                conditions: [Condition()],
+                thenSteps: manipulator.actions.map { .action($0) }
+            )
+            manipulator.actions = []
+        }
+    }
+
+    /// Leave conditional mode: flatten the whole block tree back into the
+    /// direct action list (steps in evaluation order, blocks expanded).
+    func exitConditionalMode(_ manipulatorID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard let root = manipulator.rootBlock else { return }
+            var flattened: [Action] = []
+            Self.flattenSteps(root.thenSteps, into: &flattened)
+            Self.flattenSteps(root.elseSteps, into: &flattened)
+            manipulator.rootBlock = nil
+            manipulator.actions = flattened + manipulator.actions
+        }
+    }
+
+    private static func flattenSteps(_ steps: [BranchStep], into out: inout [Action]) {
+        for step in steps {
+            switch step {
+            case .action(let action):
+                out.append(action)
+            case .block(let nested):
+                flattenSteps(nested.thenSteps, into: &out)
+                flattenSteps(nested.elseSteps, into: &out)
+            }
+        }
+    }
+
+    // MARK: - Block conditions
+
+    /// Append a condition placeholder to a block (any depth) for the editor
+    /// to configure; `kind` seeds the condition kind dropdown.
+    func addBlockCondition(_ manipulatorID: UUID, to blockID: UUID, kind: ConditionKind = .frontmostApp) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                var condition = Condition()
+                condition.kind = kind
+                block.conditions.append(condition)
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    func updateBlockCondition(_ manipulatorID: UUID, conditionID: UUID, inBlock blockID: UUID, _ transform: (inout Condition) -> Void) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                if let index = block.conditions.firstIndex(where: { $0.id == conditionID }) {
+                    transform(&block.conditions[index])
+                }
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    func removeBlockCondition(_ manipulatorID: UUID, conditionID: UUID, fromBlock blockID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                block.conditions.removeAll { $0.id == conditionID }
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    func moveBlockCondition(_ manipulatorID: UUID, inBlock blockID: UUID, fromOffsets source: IndexSet, toOffset destination: Int) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                block.conditions.move(fromOffsets: source, toOffset: destination)
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    /// Toggle a block's match mode between ALL (AND) and ANY (OR).
+    func setBlockMatchAll(_ manipulatorID: UUID, blockID: UUID, matchAll: Bool) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { $0.matchAll = matchAll }
+            manipulator.rootBlock = root
+        }
+    }
+
+    /// Set which trigger(s) a block applies to.
+    func setBlockTriggerScope(_ manipulatorID: UUID, blockID: UUID, scope: BranchTriggerScope) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { $0.triggerScope = scope }
+            manipulator.rootBlock = root
+        }
+    }
+
+    // MARK: - Block actions & steps
+
+    /// Append an action step to a block's then or else list.
+    func addTreeAction(_ manipulatorID: UUID, to blockID: UUID, in side: WritableKeyPath<BranchBlock, [BranchStep]> = \.thenSteps, kind: ActionKind) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                block[keyPath: side].append(.action(Action(kind: kind)))
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    /// Append a blank nested `if` block into a block's then or else list.
+    /// Blank = no conditions = always matches, so behavior is unchanged until
+    /// the user adds conditions.
+    func addNestedBlock(_ manipulatorID: UUID, to blockID: UUID, in side: WritableKeyPath<BranchBlock, [BranchStep]> = \.thenSteps) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                block[keyPath: side].append(.block(BranchBlock()))
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    /// Update any action nested anywhere in the tree (searched by action ID).
+    func updateTreeAction(_ actionID: UUID, in manipulatorID: UUID, _ transform: (inout Action) -> Void) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            var found = false
+            Self.forEachStep(&root.thenSteps) { step in
+                if case .action(var action) = step, action.id == actionID {
+                    transform(&action)
+                    step = .action(action)
+                    found = true
+                }
+            }
+            if !found {
+                Self.forEachStep(&root.elseSteps) { step in
+                    if case .action(var action) = step, action.id == actionID {
+                        transform(&action)
+                        step = .action(action)
+                    }
+                }
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    /// Replace an existing tree action's kind (picked from the library).
+    func replaceTreeAction(_ actionID: UUID, in manipulatorID: UUID, kind: ActionKind) {
+        updateTreeAction(actionID, in: manipulatorID) { $0.kind = kind }
+    }
+
+    /// Remove any step (action or block) from anywhere in the tree.
+    func removeTreeStep(_ stepID: UUID, from manipulatorID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            var removed = false
+            root.thenSteps = Self.removeStep(from: root.thenSteps, stepID: stepID, removed: &removed)
+            if !removed {
+                root.elseSteps = Self.removeStep(from: root.elseSteps, stepID: stepID, removed: &removed)
+            }
+            if removed {
+                manipulator.rootBlock = root
+            }
+        }
+    }
+
+    func moveTreeStep(_ manipulatorID: UUID, in blockID: UUID, side: WritableKeyPath<BranchBlock, [BranchStep]> = \.thenSteps, fromOffsets source: IndexSet, toOffset destination: Int) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            Self.forEachBlock(&root, where: blockID) { block in
+                block[keyPath: side].move(fromOffsets: source, toOffset: destination)
+            }
+            manipulator.rootBlock = root
+        }
+    }
+
+    // MARK: - Tree structural operations
+
+    /// Replace one action step with an `if` block containing it (wrapping),
+    /// so an existing action can gain its own conditions in place.
+    func wrapTreeStepInBlock(_ stepID: UUID, in manipulatorID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            var wrapped = false
+            root.thenSteps = Self.wrapStep(in: root.thenSteps, stepID: stepID, wrapped: &wrapped)
+            if !wrapped {
+                root.elseSteps = Self.wrapStep(in: root.elseSteps, stepID: stepID, wrapped: &wrapped)
+            }
+            if wrapped {
+                manipulator.rootBlock = root
+            }
+        }
+    }
+
+    /// Dissolve a block but keep its `then` steps inline. The `else` steps
+    /// are discarded (the user is explicitly deleting the guard).
+    func unwrapTreeBlock(_ blockID: UUID, in manipulatorID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            var unwrapped = false
+            root.thenSteps = Self.unwrapBlock(in: root.thenSteps, blockID: blockID, unwrapped: &unwrapped)
+            if !unwrapped {
+                root.elseSteps = Self.unwrapBlock(in: root.elseSteps, blockID: blockID, unwrapped: &unwrapped)
+            }
+            if unwrapped {
+                manipulator.rootBlock = root
+            }
+        }
+    }
+
+    /// Delete a block together with all of its steps and nested blocks.
+    func deleteTreeBlock(_ blockID: UUID, in manipulatorID: UUID) {
+        updateManipulator(manipulatorID) { manipulator in
+            guard var root = manipulator.rootBlock else { return }
+            var deleted = false
+            root.thenSteps = Self.deleteBlock(in: root.thenSteps, blockID: blockID, deleted: &deleted)
+            if !deleted {
+                root.elseSteps = Self.deleteBlock(in: root.elseSteps, blockID: blockID, deleted: &deleted)
+            }
+            if deleted {
+                manipulator.rootBlock = root
+            }
+        }
+    }
+
+    // MARK: - Tree recursion helpers
+
+    /// Visit every step in a list, recursing into nested blocks. The handler
+    /// may replace a step wholesale; recursion happens after the handler so a
+    /// swapped-in block is (harmlessly) descended into as well.
+    /// Visit the block with the given ID (including the root itself), in
+    /// place. Called from inside `updateManipulator` transforms.
+    private static func forEachBlock(_ block: inout BranchBlock, where blockID: UUID, _ handler: (inout BranchBlock) -> Void) {
+        if block.id == blockID {
+            handler(&block)
+            return
+        }
+        for sidePath in [\BranchBlock.thenSteps, \BranchBlock.elseSteps] {
+            var steps = block[keyPath: sidePath]
+            var changed = false
+            for index in steps.indices {
+                if case .block(var nested) = steps[index] {
+                    var before = nested
+                    nested = Self.rebuildBlock(nested, where: blockID, handler)
+                    if nested != before {
+                        steps[index] = .block(nested)
+                        changed = true
+                    }
+                }
+            }
+            if changed {
+                block[keyPath: sidePath] = steps
+            }
+        }
+    }
+
+    private static func rebuildBlock(_ block: BranchBlock, where blockID: UUID, _ handler: (inout BranchBlock) -> Void) -> BranchBlock {
+        var copy = block
+        if copy.id == blockID {
+            handler(&copy)
+            return copy
+        }
+        copy.thenSteps = branchStepsMap(copy.thenSteps, where: blockID, handler)
+        copy.elseSteps = branchStepsMap(copy.elseSteps, where: blockID, handler)
+        return copy
+    }
+
+    private static func branchStepsMap(_ steps: [BranchStep], where blockID: UUID, _ handler: (inout BranchBlock) -> Void) -> [BranchStep] {
+        steps.map { step -> BranchStep in
+            guard case .block(let nested) = step else { return step }
+            return .block(rebuildBlock(nested, where: blockID, handler))
+        }
+    }
+
+    private static func forEachStep(_ steps: inout [BranchStep], _ handler: (inout BranchStep) -> Void) {
+        for index in steps.indices {
+            handler(&steps[index])
+            if case .block(var nested) = steps[index] {
+                forEachStep(&nested.thenSteps, handler)
+                forEachStep(&nested.elseSteps, handler)
+                steps[index] = .block(nested)
+            }
+        }
+    }
+
+    private static func removeStep(from steps: [BranchStep], stepID: UUID, removed: inout Bool) -> [BranchStep] {
+        guard !removed else { return steps }
+        var result: [BranchStep] = []
+        result.reserveCapacity(steps.count)
+        for var step in steps {
+            if step.id == stepID {
+                removed = true
+                continue
+            }
+            if case .block(var nested) = step {
+                nested.thenSteps = removeStep(from: nested.thenSteps, stepID: stepID, removed: &removed)
+                nested.elseSteps = removeStep(from: nested.elseSteps, stepID: stepID, removed: &removed)
+                step = .block(nested)
+            }
+            result.append(step)
+        }
+        return result
+    }
+
+    private static func wrapStep(in steps: [BranchStep], stepID: UUID, wrapped: inout Bool) -> [BranchStep] {
+        guard !wrapped else { return steps }
+        var result: [BranchStep] = []
+        result.reserveCapacity(steps.count)
+        for var step in steps {
+            if step.id == stepID, case .action(let action) = step {
+                // A single always-match placeholder so wrapping preserves
+                // behavior until conditions are added.
+                result.append(.block(BranchBlock(conditions: [Condition()], thenSteps: [.action(action)])))
+                wrapped = true
+                continue
+            }
+            if case .block(var nested) = step {
+                nested.thenSteps = wrapStep(in: nested.thenSteps, stepID: stepID, wrapped: &wrapped)
+                nested.elseSteps = wrapStep(in: nested.elseSteps, stepID: stepID, wrapped: &wrapped)
+                step = .block(nested)
+            }
+            result.append(step)
+        }
+        return result
+    }
+
+    /// hoist the block's then steps (expanded) inline in place of the block.
+    private static func unwrapBlock(in steps: [BranchStep], blockID: UUID, unwrapped: inout Bool) -> [BranchStep] {
+        guard !unwrapped else { return steps }
+        var result: [BranchStep] = []
+        result.reserveCapacity(steps.count)
+        for var step in steps {
+            if case .block(let nested) = step {
+                if nested.id == blockID {
+                    result.append(contentsOf: expandActions(nested.thenSteps))
+                    unwrapped = true
+                    continue
+                }
+                var copy = nested
+                copy.thenSteps = unwrapBlock(in: nested.thenSteps, blockID: blockID, unwrapped: &unwrapped)
+                copy.elseSteps = unwrapBlock(in: nested.elseSteps, blockID: blockID, unwrapped: &unwrapped)
+                step = .block(copy)
+            }
+            result.append(step)
+        }
+        return result
+    }
+
+    private static func deleteBlock(in steps: [BranchStep], blockID: UUID, deleted: inout Bool) -> [BranchStep] {
+        guard !deleted else { return steps }
+        var result: [BranchStep] = []
+        result.reserveCapacity(steps.count)
+        for var step in steps {
+            if case .block(let nested) = step {
+                if nested.id == blockID {
+                    deleted = true
+                    continue
+                }
+                var copy = nested
+                copy.thenSteps = deleteBlock(in: copy.thenSteps, blockID: blockID, deleted: &deleted)
+                copy.elseSteps = deleteBlock(in: copy.elseSteps, blockID: blockID, deleted: &deleted)
+                step = .block(copy)
+            }
+            result.append(step)
+        }
+        return result
+    }
+
+    private static func expandActions(_ steps: [BranchStep]) -> [BranchStep] {
+        steps.flatMap { step -> [BranchStep] in
+            switch step {
+            case .action:
+                return [step]
+            case .block(let nested):
+                return expandActions(nested.thenSteps) + expandActions(nested.elseSteps)
+            }
         }
     }
 
     func addActionToSelected() {
-        pushUndo()
         updateSelectedManipulator { $0.actions.append(Action(kind: .sendKey)) }
     }
 
     func addActionTo(_ manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { $0.actions.append(Action(kind: .sendKey)) }
     }
 
     func addAction(_ kind: ActionKind, to manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { $0.actions.append(Action(kind: kind)) }
     }
 
     func removeAction(_ actionID: UUID, from manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { manipulator in
             manipulator.actions.removeAll { $0.id == actionID }
         }
     }
 
     func moveAction(from source: IndexSet, to destination: Int, in manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { manipulator in
             manipulator.actions.move(fromOffsets: source, toOffset: destination)
         }
     }
-
-    func addConditionToSelected() {
-        pushUndo()
-        updateSelectedManipulator { $0.conditions.append(Condition()) }
-    }
-
-    func addCondition(to manipulatorID: UUID) {
-        pushUndo()
-        updateManipulator(manipulatorID) { $0.conditions.append(Condition()) }
-    }
-
-    func removeCondition(_ conditionID: UUID, from manipulatorID: UUID) {
-        pushUndo()
+    func duplicateAction(_ actionID: UUID, in manipulatorID: UUID) {
         updateManipulator(manipulatorID) { manipulator in
-            manipulator.conditions.removeAll { $0.id == conditionID }
+            guard let index = manipulator.actions.firstIndex(where: { $0.id == actionID }) else { return }
+            let copy = manipulator.actions[index]
+            var mutableCopy = copy
+            mutableCopy.id = UUID()
+            manipulator.actions.insert(mutableCopy, at: index + 1)
         }
     }
 
-    func moveCondition(from source: IndexSet, to destination: Int, in manipulatorID: UUID) {
-        pushUndo()
+    /// Duplicate an action at any depth inside the nested block tree.
+    func duplicateTreeAction(_ actionID: UUID, in manipulatorID: UUID) {
         updateManipulator(manipulatorID) { manipulator in
-            manipulator.conditions.move(fromOffsets: source, toOffset: destination)
+            guard var root = manipulator.rootBlock else { return }
+            var duplicated = false
+            root.thenSteps = Self.duplicateStep(in: root.thenSteps, actionID: actionID, duplicated: &duplicated)
+            if !duplicated {
+                root.elseSteps = Self.duplicateStep(in: root.elseSteps, actionID: actionID, duplicated: &duplicated)
+            }
+            if duplicated {
+                manipulator.rootBlock = root
+            }
         }
     }
 
-    // MARK: - Menu Bar Items CRUD
+    /// Insert a fresh copy of the action directly after it (same list).
+    private static func duplicateStep(in steps: [BranchStep], actionID: UUID, duplicated: inout Bool) -> [BranchStep] {
+        guard !duplicated else { return steps }
+        var result: [BranchStep] = []
+        result.reserveCapacity(steps.count + 1)
+        for var step in steps {
+            if case .action(let action) = step, action.id == actionID {
+                var copy = action
+                copy.id = UUID()
+                result.append(step)
+                result.append(.action(copy))
+                duplicated = true
+                continue
+            }
+            if case .block(var nested) = step {
+                nested.thenSteps = duplicateStep(in: nested.thenSteps, actionID: actionID, duplicated: &duplicated)
+                nested.elseSteps = duplicateStep(in: nested.elseSteps, actionID: actionID, duplicated: &duplicated)
+                step = .block(nested)
+            }
+            result.append(step)
+        }
+        return result
+    }
 
     func addMenuBarItem() {
         let item = MenuBarItem(name: "New Menu Item")
@@ -778,40 +1308,21 @@ final class RemapStore: ObservableObject {
     // MARK: - Additional Triggers
 
     func addAdditionalTrigger(to manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) {
             $0.additionalTriggers.append(AdditionalTrigger())
         }
     }
 
     func removeAdditionalTrigger(_ triggerID: UUID, from manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { manip in
             manip.additionalTriggers.removeAll { $0.id == triggerID }
         }
     }
 
     func updateAdditionalTrigger(_ triggerID: UUID, in manipulatorID: UUID, _ transform: (inout AdditionalTrigger) -> Void) {
-        pushUndo()
         updateManipulator(manipulatorID) { manip in
             guard let idx = manip.additionalTriggers.firstIndex(where: { $0.id == triggerID }) else { return }
             transform(&manip.additionalTriggers[idx])
-        }
-    }
-
-    func addConditionToAdditionalTrigger(_ triggerID: UUID, in manipulatorID: UUID) {
-        pushUndo()
-        updateManipulator(manipulatorID) { manip in
-            guard let idx = manip.additionalTriggers.firstIndex(where: { $0.id == triggerID }) else { return }
-            manip.additionalTriggers[idx].conditions.append(Condition())
-        }
-    }
-
-    func removeConditionFromAdditionalTrigger(_ conditionID: UUID, additionalTriggerID: UUID, manipulatorID: UUID) {
-        pushUndo()
-        updateManipulator(manipulatorID) { manip in
-            guard let idx = manip.additionalTriggers.firstIndex(where: { $0.id == additionalTriggerID }) else { return }
-            manip.additionalTriggers[idx].conditions.removeAll { $0.id == conditionID }
         }
     }
 
@@ -821,25 +1332,19 @@ final class RemapStore: ObservableObject {
         recordedTriggerSteps = []
         triggerRecordingManipulatorID = manipulatorID
         triggerRecordingAdditionalTriggerID = triggerID
-        triggerRecordingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self else { return event }
-            guard let shortcut = self.recordedShortcut(from: event) else { return event }
-            self.recordedTriggerSteps.append(shortcut)
-            return nil
-        }
+        triggerRecordingMonitor = makeTriggerRecordingMonitor()
+    }
+    func startChordRecording(for manipulatorID: UUID) {
+        stopAllCapture()
+        isRecordingTrigger = true
+        recordedTriggerSteps = []
+        triggerRecordingManipulatorID = manipulatorID
+        triggerRecordingIsChord = true
+        triggerRecordingMonitor = makeTriggerRecordingMonitor()
     }
 
-    func updateConditionInAdditionalTrigger(_ conditionID: UUID, additionalTriggerID: UUID, manipulatorID: UUID, _ transform: (inout Condition) -> Void) {
-        pushUndo()
-        updateManipulator(manipulatorID) { manip in
-            guard let idx = manip.additionalTriggers.firstIndex(where: { $0.id == additionalTriggerID }) else { return }
-            guard let ci = manip.additionalTriggers[idx].conditions.firstIndex(where: { $0.id == conditionID }) else { return }
-            transform(&manip.additionalTriggers[idx].conditions[ci])
-        }
-    }
 
     func toggleTag(_ tag: String, on manipulatorID: UUID) {
-        pushUndo()
         updateManipulator(manipulatorID) { manipulator in
             if manipulator.tags.contains(tag) {
                 manipulator.tags.remove(tag)
@@ -850,9 +1355,7 @@ final class RemapStore: ObservableObject {
     }
 
     func toggleStarred(_ manipulatorID: UUID) {
-        pushUndo()
         updateManipulatorCosmetic(manipulatorID) { $0.isStarred.toggle() }
-        saveConfig()
     }
 
     // MARK: - Config Profile CRUD
@@ -1006,11 +1509,21 @@ final class RemapStore: ObservableObject {
         return (manifest.profiles, manifest.activeProfileID)
     }
 
-    /// Save the current profiles manifest to disk.
+    /// Save the current profiles manifest to disk (background, debounced).
     func saveProfilesManifest() {
+        scheduleSaveProfilesManifest()
+    }
+
+    private func scheduleSaveProfilesManifest() {
+        saveManifestTask?.cancel()
         let manifest = ProfilesManifest(profiles: profiles, activeProfileID: activeProfileID)
-        guard let data = try? JSONEncoder().encode(manifest) else { return }
-        try? data.write(to: Self.profilesManifestURL)
+        let url = Self.profilesManifestURL
+        saveManifestTask = Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled else { return }
+            guard let data = try? JSONEncoder().encode(manifest) else { return }
+            try? data.write(to: url)
+        }
     }
 
     /// Load a specific profile's data (manipulators + menu bar items) from disk.
@@ -1032,19 +1545,10 @@ final class RemapStore: ObservableObject {
     // MARK: - Config persistence
 
     /// Save manipulators and menu bar items to the active profile's dedicated file.
-    /// config.json mirror is written lazily — only on profile switch or app launch
-    /// — to avoid double-I/O on every change.
+    /// Encodes off the main actor and writes compact JSON (no pretty-print) so
+    /// per-edit saves stay cheap. Pretty-printing is only for explicit export.
     func saveConfig() {
-        let profileData = ProfileData(manipulators: manipulators, menuBarItems: menuBarItems)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        guard let data = try? encoder.encode(profileData) else { return }
-
-        // Save to active profile file only
-        Self.ensureAppSupportDirectory()
-        try? FileManager.default.createDirectory(at: Self.profilesDirectoryURL, withIntermediateDirectories: true)
-        let profileURL = Self.profileConfigURL(for: activeProfileID)
-        try? data.write(to: profileURL)
+        scheduleSaveConfig()
     }
 
     /// Mirror the active profile's config to config.json for backward compatibility.
@@ -1057,18 +1561,25 @@ final class RemapStore: ObservableObject {
     private func scheduleSaveConfig() {
         saveConfigTask?.cancel()
         let profileData = ProfileData(manipulators: manipulators, menuBarItems: menuBarItems)
+        // Encode now, at schedule time: the bytes we are about to write define
+        // exactly which file events count as our own echoes.
+        guard let encodedData = try? JSONEncoder().encode(profileData) else { return }
         let profileURL = Self.profileConfigURL(for: activeProfileID)
-        let appSupportURL = Self.appSupportURL
         let profilesDirectoryURL = Self.profilesDirectoryURL
-        saveConfigTask = Task.detached(priority: .utility) {
+        lastWrittenManipulators = manipulators
+        lastWrittenConfigData = encodedData
+        saveConfigTask = Task.detached(priority: .utility) { [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else { return }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
-            guard let data = try? encoder.encode(profileData) else { return }
-            try? FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+            // Profile dir creates its parents; compact encoding is ~2-3x
+            // faster than .prettyPrinted and lighter on I/O.
             try? FileManager.default.createDirectory(at: profilesDirectoryURL, withIntermediateDirectories: true)
-            try? data.write(to: profileURL)
+            try? encodedData.write(to: profileURL)
+            // Stamp our own write so the file watcher can tell its echo
+            // apart from genuine external changes (see startConfigPolling).
+            await MainActor.run { [weak self] in
+                self?.lastOwnSaveDate = Date()
+            }
         }
     }
 
@@ -1089,9 +1600,8 @@ final class RemapStore: ObservableObject {
         saveMenuBarItemsTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000) // 300ms debounce
             guard let self, !Task.isCancelled else { return }
-            // Save menu bar items into the active profile
-            self.saveConfig()
-            NotificationCenter.default.post(name: .menuBarItemsDidChange, object: nil)
+            // Save menu bar items into the active profile (already debounced upstream)
+            self.scheduleSaveConfig()
         }
     }
 
@@ -1118,12 +1628,14 @@ final class RemapStore: ObservableObject {
 
     /// Immediately persist menu bar items to the active profile file.
     private func saveMenuBarItemsImmediate() {
-        saveConfig()
-        NotificationCenter.default.post(name: .menuBarItemsDidChange, object: nil)
+        scheduleSaveMenuBarItems()
     }
 
     /// Watch the active profile config file for external changes using kqueue,
     /// eliminating the need for polling. Fires only when the file is actually written.
+    /// Own debounced saves are ignored via `lastOwnSaveDate`, and no-op reloads
+    /// are skipped by content comparison — otherwise every keystroke's echo
+    /// would replace the array and revert in-flight text edits.
     func startConfigPolling() {
         stopConfigPolling()
         let url = Self.profileConfigURL(for: activeProfileID)
@@ -1163,9 +1675,34 @@ final class RemapStore: ObservableObject {
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // Own echoes are identified by CONTENT: the event's file bytes
+                // are compared with what our most recent save wrote. mtime
+                // comparisons are timing-sensitive — a file event can fire
+                // before `lastOwnSaveDate` is stamped, which would let our own
+                // older write reload over newer in-memory state.
+                let fileData = try? Data(contentsOf: url)
+                if let fileData, fileData == self.lastWrittenConfigData {
+                    return
+                }
+                // Secondary guard for windows where no save has been scheduled
+                // yet (e.g. right after a profile switch restarted the watch).
+                if mod <= self.lastOwnSaveDate { return }
                 if let loaded = Self.loadProfileData(id: self.activeProfileID) {
+                    // Skip no-op reloads so unrelated refreshes never disturb edits.
+                    guard loaded.manipulators != self.manipulators || loaded.menuBarItems != self.menuBarItems else { return }
+                    // If the local state has diverged from what we last wrote
+                    // (someone typed, or another instance wrote a stale copy),
+                    // our state wins: re-assert it to disk instead of letting
+                    // the file overwrite in-progress edits.
+                    if let lastWritten = self.lastWrittenManipulators,
+                       lastWritten != self.manipulators {
+                        self.scheduleSaveConfig()
+                        return
+                    }
                     self.manipulators = loaded.manipulators
                     self.menuBarItems = loaded.menuBarItems
+                    self.lastWrittenManipulators = loaded.manipulators
+                    self.lastWrittenConfigData = fileData
                     self.objectWillChange.send()
                     self.applyRemaps()
                 }
@@ -1194,7 +1731,8 @@ final class RemapStore: ObservableObject {
             "manipulatorCount": manipulators.count,
             "timestamp": Date().timeIntervalSince1970
         ]
-        guard let data = try? JSONSerialization.data(withJSONObject: info, options: .prettyPrinted) else { return }
+        // Compact JSON — this fires on every engine state change.
+        guard let data = try? JSONSerialization.data(withJSONObject: info, options: []) else { return }
         try? data.write(to: Self.statusURL)
     }
 
@@ -1247,15 +1785,13 @@ final class RemapStore: ObservableObject {
         isRecordingTrigger = true
         recordedTriggerSteps = []
         triggerRecordingManipulatorID = manipulatorID
-        triggerRecordingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self else { return event }
-            guard let shortcut = self.recordedShortcut(from: event) else { return event }
-            self.recordedTriggerSteps.append(shortcut)
-            return nil
-        }
+        triggerRecordingMonitor = makeTriggerRecordingMonitor()
+    }
+    func stopTriggerRecording(save: Bool) {
+        stopRecording(save: save)
     }
 
-    func stopTriggerRecording(save: Bool) {
+    private func stopRecording(save: Bool) {
         guard isRecordingTrigger else { return }
         isRecordingTrigger = false
         if let triggerRecordingMonitor {
@@ -1266,8 +1802,13 @@ final class RemapStore: ObservableObject {
            !recordedTriggerSteps.isEmpty {
             pushUndo()
             let steps = recordedTriggerSteps
-            if let additionalTriggerID = triggerRecordingAdditionalTriggerID,
-               let manipulatorID = triggerRecordingManipulatorID {
+            if triggerRecordingIsChord {
+                // Chord recording: set simultaneous trigger
+                if let manipulatorID = triggerRecordingManipulatorID {
+                    updateManipulator(manipulatorID) { $0.trigger.simultaneous = SimultaneousTrigger(keys: steps) }
+                }
+            } else if let additionalTriggerID = triggerRecordingAdditionalTriggerID,
+                      let manipulatorID = triggerRecordingManipulatorID {
                 updateAdditionalTrigger(additionalTriggerID, in: manipulatorID) { additional in
                     additional.trigger.steps = steps
                 }
@@ -1278,6 +1819,7 @@ final class RemapStore: ObservableObject {
         triggerRecordingManipulatorID = nil
         triggerRecordingAdditionalTriggerID = nil
         recordedTriggerSteps = []
+        triggerRecordingIsChord = false
     }
 
     func removeRecordedTriggerStep(at index: Int) {
@@ -1301,6 +1843,10 @@ final class RemapStore: ObservableObject {
             guard let self else { return event }
             let keyID = self.keyID(from: event)
             let modifiers = self.modifiers(from: event.modifierFlags)
+            if keyID == "escape" && modifiers.isEmpty {
+                self.stopToKeyCapture()
+                return nil
+            }
             self.updateAction(actionID, in: manipulatorID) { action in
                 action.toKey = keyID
                 action.toModifiers = modifiers
@@ -1464,8 +2010,10 @@ final class RemapStore: ObservableObject {
             }
         case .getBatteryState:
             let output = runShell("pmset -g batt")
-            if let match = output.range(of: #"\d+%"#, options: .regularExpression) {
-                engine.setVariable(name: "batteryLevel", value: String(output[match].dropLast()))
+            let nsRange = NSRange(output.startIndex..<output.endIndex, in: output)
+            if let match = Self.batteryPercentRegex.firstMatch(in: output, options: [], range: nsRange),
+               let range = Range(match.range, in: output) {
+                engine.setVariable(name: "batteryLevel", value: String(output[range].dropLast()))
             }
             engine.setVariable(name: "batteryCharging", value: output.contains("AC Power") ? "true" : "false")
             Task { @MainActor [weak self] in self?.objectWillChange.send() }
@@ -1666,8 +2214,10 @@ final class RemapStore: ObservableObject {
             _ = Self.runAppleScript("tell application \"Finder\" to empty trash")
         case .getBatteryState:
             let output = runShell("pmset -g batt")
-            if let match = output.range(of: #"\d+%"#, options: .regularExpression) {
-                engine.setVariable(name: "batteryLevel", value: String(output[match].dropLast()))
+            let batteryRange = NSRange(output.startIndex..<output.endIndex, in: output)
+            if let match = Self.batteryPercentRegex.firstMatch(in: output, options: [], range: batteryRange),
+               let range = Range(match.range, in: output) {
+                engine.setVariable(name: "batteryLevel", value: String(output[range].dropLast()))
             }
             engine.setVariable(name: "batteryCharging", value: output.contains("AC Power") ? "true" : "false")
             objectWillChange.send()
@@ -1909,59 +2459,6 @@ final class RemapStore: ObservableObject {
         return NSScreen.screens.first { $0.frame.contains(appKitPoint) }
     }
 
-    // MARK: - Text transforms
-
-    static func transformText(_ input: String, kind: TextTransformKind) -> String {
-        switch kind {
-        case .upperCase: return input.uppercased()
-        case .lowerCase: return input.lowercased()
-        case .capitalize: return input.capitalized
-        case .camelCase:
-            let words = splitWords(input)
-            guard let first = words.first else { return input }
-            return first.lowercased() + words.dropFirst().map(\.capitalized).joined()
-        case .pascalCase:
-            return splitWords(input).map(\.capitalized).joined()
-        case .snakeCase:
-            return splitWords(input).map { $0.lowercased() }.joined(separator: "_")
-        case .kebabCase:
-            return splitWords(input).map { $0.lowercased() }.joined(separator: "-")
-        case .trimWhitespace:
-            return input.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .slugify:
-            let lowered = splitWords(input).map { $0.lowercased() }.joined(separator: "-")
-            return lowered.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" }
-                .reduce(into: "") { $0.append(Character($1)) }
-        case .encodeBase64:
-            return Data(input.utf8).base64EncodedString()
-        case .decodeBase64:
-            guard let data = Data(base64Encoded: input.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  let decoded = String(data: data, encoding: .utf8) else { return input }
-            return decoded
-        case .encodeURL:
-            return input.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? input
-        case .decodeURL:
-            return input.removingPercentEncoding ?? input
-        }
-    }
-
-    /// Split text into words on whitespace, punctuation, underscores, hyphens,
-    /// and camelCase boundaries.
-    private static func splitWords(_ input: String) -> [String] {
-        var separated = ""
-        var previous: Character?
-        for char in input {
-            if let previous, previous.isLowercase || previous.isNumber, char.isUppercase {
-                separated.append(" ")
-            }
-            separated.append(char)
-            previous = char
-        }
-        return separated
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-    }
-
     // MARK: - Screen flash
 
     /// Flash the screen with a brief translucent overlay, then fade it out.
@@ -2066,11 +2563,10 @@ final class RemapStore: ObservableObject {
     /// manipulator in the floating macro palette.
     func executeManipulatorFromPalette(_ manipulator: Manipulator) {
         guard manipulator.isEnabled else { return }
-        // Check manipulator-level conditions first
-        guard manipulator.conditions.allSatisfy({ engine.evaluateCondition($0) }) else { return }
-        for action in manipulator.actions where action.fireMode == .onKeyDown {
+        // Resolve the if/elif/else chain as the main trigger would.
+        guard let resolved = engine.resolvedActions(for: manipulator, scope: .main) else { return }
+        for action in resolved where action.fireMode == .onKeyDown {
             guard action.isConfigured else { continue }
-            guard action.actionConditions.allSatisfy({ engine.evaluateCondition($0) }) else { continue }
             executeActionImpl(action, of: manipulator, proxy: nil)
             if action.kind == .halt { break }
         }
@@ -2078,7 +2574,7 @@ final class RemapStore: ObservableObject {
 
     // MARK: - Posting events
 
-    /// Cached regex for variable token expansion: {variable_name}
+    private static let batteryPercentRegex = try! NSRegularExpression(pattern: "\\d+%", options: [])
     private static let variableTokenRegex = try! NSRegularExpression(pattern: "\\{([^}]+)\\}", options: [])
 
     /// Expand {variable_name} tokens in text using a regex-based approach
@@ -2347,28 +2843,6 @@ final class RemapStore: ObservableObject {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private static func runAppleScript(_ source: String) -> String {
-        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("anvil_\\(UUID().uuidString).applescript")
-        do {
-            try source.write(to: tmp, atomically: true, encoding: .utf8)
-        } catch { return "" }
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        let task = Process()
-        task.launchPath = "/usr/bin/osascript"
-        task.arguments = [tmp.path]
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        task.standardOutput = outPipe
-        task.standardError = errPipe
-        do { try task.run() } catch { return "" }
-        task.waitUntilExit()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    // MARK: - Helpers
-
     private func keyID(from event: NSEvent) -> String {
         if let keyID = KeyboardKeyCodeMap.id(for: CGKeyCode(event.keyCode)) {
             return keyID
@@ -2408,6 +2882,78 @@ final class RemapStore: ObservableObject {
         if flags.contains(.function) { modifiers.insert(.fn) }
         return modifiers
     }
+    // MARK: - Text transforms
+
+    static func transformText(_ input: String, kind: TextTransformKind) -> String {
+        switch kind {
+        case .upperCase: return input.uppercased()
+        case .lowerCase: return input.lowercased()
+        case .capitalize: return input.capitalized
+        case .camelCase:
+            let words = splitWords(input)
+            guard let first = words.first else { return input }
+            return first.lowercased() + words.dropFirst().map(\.capitalized).joined()
+        case .pascalCase:
+            return splitWords(input).map(\.capitalized).joined()
+        case .snakeCase:
+            return splitWords(input).map { $0.lowercased() }.joined(separator: "_")
+        case .kebabCase:
+            return splitWords(input).map { $0.lowercased() }.joined(separator: "-")
+        case .trimWhitespace:
+            return input.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .slugify:
+            let lowered = splitWords(input).map { $0.lowercased() }.joined(separator: "-")
+            return lowered.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" }
+                .reduce(into: "") { $0.append(Character($1)) }
+        case .encodeBase64:
+            return Data(input.utf8).base64EncodedString()
+        case .decodeBase64:
+            guard let data = Data(base64Encoded: input.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let decoded = String(data: data, encoding: .utf8) else { return input }
+            return decoded
+        case .encodeURL:
+            return input.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? input
+        case .decodeURL:
+            return input.removingPercentEncoding ?? input
+        }
+    }
+
+    private static func splitWords(_ input: String) -> [String] {
+        var separated = ""
+        var previous: Character?
+        for char in input {
+            if let previous, previous.isLowercase || previous.isNumber, char.isUppercase {
+                separated.append(" ")
+            }
+            separated.append(char)
+            previous = char
+        }
+        return separated
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func runAppleScript(_ source: String) -> String {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("anvil_\\(UUID().uuidString).applescript")
+        do {
+            try source.write(to: tmp, atomically: true, encoding: .utf8)
+        } catch { return "" }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = [tmp.path]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        task.standardOutput = outPipe
+        task.standardError = errPipe
+        do { try task.run() } catch { return "" }
+        task.waitUntilExit()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+
 }
 
 extension Manipulator {
@@ -2727,15 +3273,17 @@ extension Manipulator {
                 notes: "Tests: device_exists condition.\nBehavior: Pressing ctrl+opt+cmd+e sends text 'Device present' ONLY if a built-in keyboard exists (always true on MacBooks).\nTo test: Press ctrl+opt+cmd+e → types 'Device present'. Disconnect built-in keyboard (if possible) → should NOT fire.",
                 isEnabled: true,
                 trigger: ManipulatorTrigger(steps: [KeyShortcut(mandatoryModifiers: [.control, .option, .command], key: "e")]),
-                conditions: [Condition(
-                    kind: .deviceExists,
-                    op: .isEqual,
-                    target: "built-in"
-                )],
-                actions: [Action(
-                    kind: .sendText,
-                    text: "Device present"
-                )]
+                rootBlock: BranchBlock(
+                    conditions: [Condition(
+                        kind: .deviceExists,
+                        op: .isEqual,
+                        target: "built-in"
+                    )],
+                    thenSteps: [.action(Action(
+                        kind: .sendText,
+                        text: "Device present"
+                    ))]
+                )
             ),
 
             // ================================================================
@@ -2746,15 +3294,17 @@ extension Manipulator {
                 notes: "Tests: expression condition.\nBehavior: Pressing ctrl+opt+cmd+x sends 'Expr true' ONLY if variable 'mode' equals 'a'.\nTo test: Press ctrl+opt+cmd+1 first, then press ctrl+opt+cmd+x.",
                 isEnabled: true,
                 trigger: ManipulatorTrigger(steps: [KeyShortcut(mandatoryModifiers: [.control, .option, .command], key: "x")]),
-                conditions: [Condition(
-                    kind: .expression,
-                    op: .isEqual,
-                    target: "mode == \"a\""
-                )],
-                actions: [Action(
-                    kind: .sendText,
-                    text: "Expr true"
-                )]
+                rootBlock: BranchBlock(
+                    conditions: [Condition(
+                        kind: .expression,
+                        op: .isEqual,
+                        target: "mode == \"a\""
+                    )],
+                    thenSteps: [.action(Action(
+                        kind: .sendText,
+                        text: "Expr true"
+                    ))]
+                )
             ),
 
             // ================================================================
@@ -2765,15 +3315,17 @@ extension Manipulator {
                 notes: "Tests: event_changed condition.\nBehavior: Pressing ctrl+opt+cmd+y sends 'Event changed' ONLY if the keyboard type has changed (always evaluates as possible).\nTo test: Press ctrl+opt+cmd+y → should fire (event change is always possible).",
                 isEnabled: true,
                 trigger: ManipulatorTrigger(steps: [KeyShortcut(mandatoryModifiers: [.control, .option, .command], key: "y")]),
-                conditions: [Condition(
-                    kind: .eventChanged,
-                    op: .isEqual,
-                    target: "keyboard_type"
-                )],
-                actions: [Action(
-                    kind: .setNotification,
-                    notificationMessage: "Event changed condition met!"
-                )]
+                rootBlock: BranchBlock(
+                    conditions: [Condition(
+                        kind: .eventChanged,
+                        op: .isEqual,
+                        target: "keyboard_type"
+                    )],
+                    thenSteps: [.action(Action(
+                        kind: .setNotification,
+                        notificationMessage: "Event changed condition met!"
+                    ))]
+                )
             ),
 
             // ================================================================
@@ -2792,33 +3344,33 @@ extension Manipulator {
             ),
 
             // ================================================================
-            // FEATURE: per-action conditions (to.conditions)
+            // FEATURE: nested if/else condition blocks
             // ================================================================
             Manipulator(
-                name: "[TEST] Per-Action Conditions",
-                notes: "Tests: to.conditions (per-action conditions).\nBehavior: Pressing ctrl+opt+cmd+a triggers 2 actions: 1) Sends 'A' ONLY if variable 'cond' == 'true', 2) Sends 'B' unconditionally.\nTo test: First set 'cond' variable to 'true', then press → types 'AB'. If 'cond' is anything else → types just 'B'.",
+                name: "[TEST] If/Else Branches",
+                notes: "Tests: if/else blocks.\nBehavior: Pressing ctrl+opt+cmd+a sends 'A' if variable 'cond' == 'true', otherwise sends 'B'.\nTo test: First set 'cond' variable to 'true', then press → types 'A'. If 'cond' is anything else → types 'B'.",
                 isEnabled: true,
                 trigger: ManipulatorTrigger(steps: [KeyShortcut(mandatoryModifiers: [.control, .option, .command], key: "a")]),
-                actions: [
-                    Action(
+                rootBlock: BranchBlock(
+                    conditions: [Condition(
+                        kind: .variable,
+                        op: .isEqual,
+                        target: "cond",
+                        value: "true"
+                    )],
+                    thenSteps: [.action(Action(
                         kind: .sendKey,
                         fireMode: .onKeyDown,
                         toKey: "a",
-                        toModifiers: [.shift],
-                        actionConditions: [Condition(
-                            kind: .variable,
-                            op: .isEqual,
-                            target: "cond",
-                            value: "true"
-                        )]
-                    ),
-                    Action(
+                        toModifiers: [.shift]
+                    ))],
+                    elseSteps: [.action(Action(
                         kind: .sendKey,
                         fireMode: .onKeyDown,
                         toKey: "b",
                         toModifiers: [.shift]
-                    )
-                ]
+                    ))]
+                )
             ),
 
             // ================================================================
@@ -2980,15 +3532,17 @@ extension Manipulator {
                         timeoutSeconds: 2.0
                     )
                 ),
-                conditions: [Condition(
-                    kind: .frontmostApp,
-                    op: .isEqual,
-                    target: "com.apple.Safari"
-                )],
-                actions: [Action(
-                    kind: .setNotification,
-                    notificationMessage: "App-specific string trigger fired in Safari!"
-                )]
+                rootBlock: BranchBlock(
+                    conditions: [Condition(
+                        kind: .frontmostApp,
+                        op: .isEqual,
+                        target: "com.apple.Safari"
+                    )],
+                    thenSteps: [.action(Action(
+                        kind: .setNotification,
+                        notificationMessage: "App-specific string trigger fired in Safari!"
+                    ))]
+                )
             ),
 
             // ================================================================

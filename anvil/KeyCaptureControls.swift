@@ -1,26 +1,83 @@
 import SwiftUI
 
 struct KeyComboCaptureField: View {
-    let modifiers: Set<ModifierKey>
-    let key: String
-    let isCapturing: Bool
+    let isRecording: Bool
+    let displayLabel: String
     let onStart: () -> Void
-    let onCancel: () -> Void
+    let onStop: () -> Void
 
     var body: some View {
-        Button(action: { isCapturing ? onCancel() : onStart() }) {
-            Text(displayLabel)
-                .font(.system(.body, design: .monospaced))
-                .frame(minWidth: 90)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                if displayLabel.isEmpty {
+                    Text("Not recorded")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(displayLabel)
+                        .monospaced()
+                }
+                Spacer()
+                Button(isRecording ? "Done" : "Record") {
+                    if isRecording {
+                        onStop()
+                    } else {
+                        onStart()
+                    }
+                }
+            }
+            if isRecording {
+                Text("Press keys…  (Esc to cancel)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .buttonStyle(.bordered)
-        .tint(isCapturing ? .red : .accentColor)
-    }
-
-    private var displayLabel: String {
-        if isCapturing { return "Press a combo…" }
-        if key.isEmpty { return "Capture a combo" }
-        return KeyShortcut(mandatoryModifiers: modifiers, key: key).displayLabel
     }
 }
 
+struct KeyPickerMenu: View {
+    let label: String
+    let onPick: (String) -> Void
+
+    init(label: String = "Choose…", onPick: @escaping (String) -> Void) {
+        self.label = label
+        self.onPick = onPick
+    }
+
+    var body: some View {
+        Menu(label) {
+            let categories = Set(KeyLibrary.all.map { $0.category })
+            let sortedCategories = categories.sorted { $0.displayOrder < $1.displayOrder }
+            
+            ForEach(sortedCategories, id: \.self) { category in
+                Section(category.rawValue) {
+                    let descriptors = KeyLibrary.all.filter { $0.category == category }
+                    ForEach(descriptors) { descriptor in
+                        Button(descriptor.label) {
+                            onPick(descriptor.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ShortcutDisplayText: View {
+    let shortcuts: [KeyShortcut]
+    let emptyPlaceholder: String
+
+    init(shortcuts: [KeyShortcut], emptyPlaceholder: String = "None recorded") {
+        self.shortcuts = shortcuts
+        self.emptyPlaceholder = emptyPlaceholder
+    }
+
+    var body: some View {
+        if shortcuts.isEmpty {
+            Text(emptyPlaceholder)
+                .foregroundStyle(.secondary)
+        } else {
+            Text(shortcuts.map { $0.displayLabel }.joined(separator: " → "))
+                .monospaced()
+        }
+    }
+}

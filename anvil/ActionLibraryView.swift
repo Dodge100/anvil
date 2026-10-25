@@ -173,19 +173,6 @@ struct ActionLibraryBrowser: View {
 
     @State private var searchText = ""
     @State private var selectedCategory: ActionCategoryID? = .mostUsed
-    @FocusState private var isSearchFocused: Bool
-
-    private var filteredCategories: [(ActionCategoryID, [ActionKind])] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else {
-            return ActionCategoryID.allCases.filter { $0 != .mostUsed }.map { ($0, $0.items) }
-        }
-        return ActionCategoryID.allCases.filter { $0 != .mostUsed }.compactMap { cat in
-            let matching = cat.items.filter { $0.rawValue.lowercased().contains(query) }
-            guard !matching.isEmpty else { return nil }
-            return (cat, matching)
-        }
-    }
 
     private var mostUsedFiltered: [ActionKind] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -195,71 +182,37 @@ struct ActionLibraryBrowser: View {
 
     var body: some View {
         NavigationSplitView {
-            VStack(spacing: 0) {
-                // Search bar
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.tertiary)
-                        .font(.caption)
-                    TextField("Search…", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
-                    if !searchText.isEmpty {
-                        Button {
-                            searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-
-                // Category list
-                List(selection: $selectedCategory) {
-                    if searchText.isEmpty {
-                        Section {
-                            ForEach([ActionCategoryID.mostUsed], id: \.self) { category in
-                                categoryRow(category)
-                            }
-                        }
-                    }
-
-                    Section("Categories") {
-                        ForEach(ActionCategoryID.allCases.filter { $0 != .mostUsed }, id: \.self) { category in
+            List(selection: $selectedCategory) {
+                if searchText.isEmpty {
+                    Section {
+                        ForEach([ActionCategoryID.mostUsed], id: \.self) { category in
                             categoryRow(category)
                         }
                     }
                 }
-                .listStyle(.sidebar)
+
+                Section("Categories") {
+                    ForEach(ActionCategoryID.allCases.filter { $0 != .mostUsed }, id: \.self) { category in
+                        categoryRow(category)
+                    }
+                }
             }
+            .listStyle(.sidebar)
             .navigationTitle("Actions")
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
+            .searchable(text: $searchText)
         } detail: {
             detailContent
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 440, idealWidth: 480, minHeight: 420, idealHeight: 480)
-        .onAppear {
-            isSearchFocused = true
-        }
     }
 
     // MARK: - Category Row
 
     private func categoryRow(_ category: ActionCategoryID) -> some View {
-        Label {
-            Text(category.title)
-        } icon: {
-            Image(systemName: category.icon)
-                .foregroundStyle(category == .mostUsed ? .yellow : .secondary)
-        }
-        .tag(category)
+        Label(category.title, systemImage: category.icon)
+            .tag(category)
     }
 
     // MARK: - Detail Content
@@ -282,39 +235,17 @@ struct ActionLibraryBrowser: View {
     // MARK: - Item List
 
     private func itemList(items: [ActionKind], title: String?) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let title, searchText.isEmpty {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                    .padding(.bottom, 6)
-            }
-
-            List {
+        List {
+            Section(title ?? "") {
                 ForEach(items, id: \.self) { kind in
                     Button {
                         onSelect(kind)
                         withAnimation { isPresented = false }
                     } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: kind.symbol)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 16)
-                            Text(kind.rawValue)
-                                .font(.subheadline)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 2)
-                        .contentShape(Rectangle())
+                        Label(kind.rawValue, systemImage: kind.symbol)
                     }
-                    .buttonStyle(.plain)
-                    .tag(kind)
                 }
             }
-            .listStyle(.inset)
         }
     }
 }
@@ -372,19 +303,6 @@ struct ConditionLibraryBrowser: View {
 
     @State private var searchText = ""
     @State private var selectedCategory: ConditionCategoryID? = .mostUsed
-    @FocusState private var isSearchFocused: Bool
-
-    private var filteredCategories: [(ConditionCategoryID, [ConditionKind])] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else {
-            return ConditionCategoryID.allCases.filter { $0 != .mostUsed }.map { ($0, $0.items) }
-        }
-        return ConditionCategoryID.allCases.filter { $0 != .mostUsed }.compactMap { cat in
-            let matching = cat.items.filter { $0.rawValue.lowercased().contains(query) }
-            guard !matching.isEmpty else { return nil }
-            return (cat, matching)
-        }
-    }
 
     private var mostUsedFiltered: [ConditionKind] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -394,71 +312,37 @@ struct ConditionLibraryBrowser: View {
 
     var body: some View {
         NavigationSplitView {
-            VStack(spacing: 0) {
-                // Search bar
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.tertiary)
-                        .font(.caption)
-                    TextField("Search…", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(.subheadline)
-                    if !searchText.isEmpty {
-                        Button {
-                            searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-
-                // Category list
-                List(selection: $selectedCategory) {
-                    if searchText.isEmpty {
-                        Section {
-                            ForEach([ConditionCategoryID.mostUsed], id: \.self) { category in
-                                categoryRow(category)
-                            }
-                        }
-                    }
-
-                    Section("Categories") {
-                        ForEach(ConditionCategoryID.allCases.filter { $0 != .mostUsed }, id: \.self) { category in
+            List(selection: $selectedCategory) {
+                if searchText.isEmpty {
+                    Section {
+                        ForEach([ConditionCategoryID.mostUsed], id: \.self) { category in
                             categoryRow(category)
                         }
                     }
                 }
-                .listStyle(.sidebar)
+
+                Section("Categories") {
+                    ForEach(ConditionCategoryID.allCases.filter { $0 != .mostUsed }, id: \.self) { category in
+                        categoryRow(category)
+                    }
+                }
             }
+            .listStyle(.sidebar)
             .navigationTitle("Conditions")
             .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
+            .searchable(text: $searchText)
         } detail: {
             detailContent
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 440, idealWidth: 480, minHeight: 420, idealHeight: 480)
-        .onAppear {
-            isSearchFocused = true
-        }
     }
 
     // MARK: - Category Row
 
     private func categoryRow(_ category: ConditionCategoryID) -> some View {
-        Label {
-            Text(category.title)
-        } icon: {
-            Image(systemName: category.icon)
-                .foregroundStyle(category == .mostUsed ? .yellow : .secondary)
-        }
-        .tag(category)
+        Label(category.title, systemImage: category.icon)
+            .tag(category)
     }
 
     // MARK: - Detail Content
@@ -481,39 +365,17 @@ struct ConditionLibraryBrowser: View {
     // MARK: - Item List
 
     private func itemList(items: [ConditionKind], title: String?) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let title, searchText.isEmpty {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                    .padding(.bottom, 6)
-            }
-
-            List {
+        List {
+            Section(title ?? "") {
                 ForEach(items, id: \.self) { kind in
                     Button {
                         onSelect(kind)
                         withAnimation { isPresented = false }
                     } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: kind.symbol)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 16)
-                            Text(kind.rawValue)
-                                .font(.subheadline)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, 2)
-                        .contentShape(Rectangle())
+                        Label(kind.rawValue, systemImage: kind.symbol)
                     }
-                    .buttonStyle(.plain)
-                    .tag(kind)
                 }
             }
-            .listStyle(.inset)
         }
     }
 }

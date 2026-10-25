@@ -270,7 +270,7 @@ private struct SectionHeader: View {
             if title == "Favorites" {
                 Image(systemName: "star.fill")
                     .font(.caption2)
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(.secondary)
             }
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -308,7 +308,7 @@ private struct PaletteItemRow: View {
                 } label: {
                     Image(systemName: manipulator.isStarred ? "star.fill" : "star")
                         .font(.caption)
-                        .foregroundStyle(manipulator.isStarred ? Color.yellow : Color(nsColor: .tertiaryLabelColor))
+                        .foregroundStyle(.secondary)
                         .frame(width: 16)
                 }
                 .buttonStyle(.plain)

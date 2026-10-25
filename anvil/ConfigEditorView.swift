@@ -20,55 +20,6 @@ struct ConfigEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Toolbar ──────────────────────────────────────────────
-            HStack(spacing: 8) {
-                Text("config.json")
-                    .font(.headline)
-                Spacer()
-
-                // Reload from disk
-                Button {
-                    loadConfig()
-                } label: {
-                    Text("Reload")
-                }
-                .help("Reload config.json from disk (discards unsaved changes)")
-
-                // Format JSON
-                Button {
-                    formatJSON()
-                } label: {
-                    Text("Format")
-                }
-                .help("Pretty-print JSON")
-
-                Divider()
-                    .frame(height: 20)
-
-                // Save
-                Button {
-                    saveConfig()
-                } label: {
-                    Text("Save")
-                }
-                .disabled(!isDirty && validationError == nil)
-
-                // Close
-                Button {
-                    if isDirty {
-                        showReplaceConfirmation = true
-                    } else {
-                        dismiss()
-                    }
-                } label: {
-                    Text("Done")
-                }
-                .keyboardShortcut(.escape)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
-
             // ── Editor ───────────────────────────────────────────────
             JSONEditorTextView(text: $editorText, validationError: $validationError)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -76,35 +27,65 @@ struct ConfigEditorView: View {
             // ── Status Bar ───────────────────────────────────────────
             HStack(spacing: 8) {
                 if let error = validationError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 } else if isDirty {
                     Text("Unsaved changes")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else if let saved = lastSaved {
                     Text("Saved \(saved.formatted(date: .omitted, time: .standard))")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Loaded from disk")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
 
                 Text("\(editorText.count) chars")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(.quaternary.opacity(0.3))
         }
         .frame(minWidth: 640, minHeight: 400)
+        .navigationTitle("config.json")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                HStack(spacing: 8) {
+                    Button("Reload") {
+                        loadConfig()
+                    }
+                    .help("Reload config.json from disk (discards unsaved changes)")
+
+                    Button("Format") {
+                        formatJSON()
+                    }
+                    .help("Pretty-print JSON")
+
+                    Button("Save") {
+                        saveConfig()
+                    }
+                    .disabled(!isDirty && validationError == nil)
+                    .keyboardShortcut("s", modifiers: .command)
+
+                    Button("Done") {
+                        if isDirty {
+                            showReplaceConfirmation = true
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .keyboardShortcut(.escape)
+                }
+            }
+        }
         .onAppear {
             loadConfig()
             startPolling()

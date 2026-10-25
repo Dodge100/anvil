@@ -8,11 +8,10 @@ struct ToastView: View {
 
     var body: some View {
         Text(message)
-            .font(.subheadline.weight(.medium))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial, in: Capsule())
-            .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            .font(.footnote.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

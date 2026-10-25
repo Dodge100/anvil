@@ -138,6 +138,8 @@ enum KeyboardKeyCodeMap {
         "vk_consumer_play": UInt16(NX_KEYTYPE_PLAY),
         "vk_consumer_pause": UInt16(NX_KEYTYPE_PLAY),
         "vk_consumer_next": UInt16(NX_KEYTYPE_NEXT),
+        "vk_consumer_previous": UInt16(NX_KEYTYPE_PREVIOUS),
+        // Legacy alias (older configs stored the short form).
         "vk_consumer_prev": UInt16(NX_KEYTYPE_PREVIOUS),
         "vk_consumer_volume_up": UInt16(NX_KEYTYPE_SOUND_UP),
         "vk_consumer_volume_down": UInt16(NX_KEYTYPE_SOUND_DOWN),
@@ -203,6 +205,9 @@ enum KeyboardKeyCodeMap {
 }
 
 // MARK: - NX Key Type constants (from IOKit/hidsystem/ev_keymap.h)
+// Values taken from the SDK header: NX_KEYTYPE_FAST = 19, NX_KEYTYPE_REWIND = 20,
+// NX_POWER_KEY = 6. (The previous values had rewind/fast-forward swapped and
+// "power" colliding with NX_KEYTYPE_ILLUMINATION_DOWN.)
 
 let NX_KEYTYPE_PLAY: Int32 = 16
 let NX_KEYTYPE_NEXT: Int32 = 17
@@ -212,7 +217,7 @@ let NX_KEYTYPE_SOUND_DOWN: Int32 = 1
 let NX_KEYTYPE_MUTE: Int32 = 7
 let NX_KEYTYPE_BRIGHTNESS_UP: Int32 = 2
 let NX_KEYTYPE_BRIGHTNESS_DOWN: Int32 = 3
-let NX_KEYTYPE_REWIND: Int32 = 19
-let NX_KEYTYPE_FF: Int32 = 20
+let NX_KEYTYPE_REWIND: Int32 = 20
+let NX_KEYTYPE_FF: Int32 = 19
 let NX_KEYTYPE_EJECT: Int32 = 14
-let NX_KEYTYPE_POWER: Int32 = 22
+let NX_KEYTYPE_POWER: Int32 = 6

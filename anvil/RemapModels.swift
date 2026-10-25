@@ -73,6 +73,11 @@ enum ConsumerKeyCode: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
+    /// Canonical key ID used by the trigger system (and by the engine when
+    /// matching incoming media-key events). Single source of truth: the UI
+    /// writes this value and the engine compares incoming events against it.
+    var keyID: String { "vk_consumer_\(rawValue)" }
+
     var label: String {
         switch self {
         case .play: return "Play"
@@ -516,6 +521,27 @@ struct ManipulatorTrigger: Equatable, Codable {
         self.triggerName = try container.decodeIfPresent(String.self, forKey: .triggerName) ?? ""
         self.stringTrigger = try container.decodeIfPresent(StringTriggerOptions.self, forKey: .stringTrigger)
         self.hotKey = try container.decodeIfPresent(HotKeyTriggerConfig.self, forKey: .hotKey)
+        // Normalize consumer trigger IDs to the canonical `vk_consumer_*` form
+        // so triggers saved by older builds still match media-key events.
+        if keyType == .consumer, let first = steps.first {
+            let canonical = Self.canonicalConsumerKeyID(first.key)
+            if canonical != first.key {
+                steps[0].key = canonical
+            }
+        }
+    }
+
+    /// Canonical consumer key ID for a stored value (legacy short forms and
+    /// the old `vk_consumer_prev` spelling are upgraded).
+    static func canonicalConsumerKeyID(_ keyID: String) -> String {
+        if let code = ConsumerKeyCode.allCases.first(where: { $0.keyID == keyID }) {
+            return code.keyID
+        }
+        if let code = ConsumerKeyCode.allCases.first(where: { $0.rawValue == keyID }) {
+            return code.keyID
+        }
+        if keyID == "vk_consumer_prev" { return ConsumerKeyCode.previous.keyID }
+        return keyID
     }
 
     func encode(to encoder: Encoder) throws {
@@ -677,6 +703,217 @@ struct Condition: Identifiable, Equatable, Codable {
             return "\(kind.rawValue) \(target.isEmpty ? "…" : target) \(opText) \(value.isEmpty ? "…" : value)"
         }
         return "\(kind.rawValue) \(opText) \(target.isEmpty ? "…" : target)"
+    }
+}
+
+// MARK: - Conditional branches (if / elif / else)
+
+extension Condition {
+    private enum ConditionCodingKeys: String, CodingKey {
+        case id, kind, op, target, value
+    }
+
+    /// Lenient decode: a fresh id is generated when omitted (hand-edited profiles).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: ConditionCodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        kind = try container.decodeIfPresent(ConditionKind.self, forKey: .kind) ?? .frontmostApp
+        op = try container.decodeIfPresent(ComparisonOp.self, forKey: .op) ?? .isEqual
+        target = try container.decodeIfPresent(String.self, forKey: .target) ?? ""
+        value = try container.decodeIfPresent(String.self, forKey: .value) ?? ""
+    }
+}
+
+/// Selects which trigger(s) a condition branch applies to.
+/// A manipulator shares one if/elif/else chain across its main trigger and any
+/// additional triggers; this scope lets an individual branch opt in to only
+/// the main trigger or one specific additional trigger.
+enum BranchTriggerScope: Equatable, Hashable, Codable {
+    case any
+    case main
+    case additional(id: UUID)
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "any"
+        switch kind {
+        case "main":
+            self = .main
+        case "additional":
+            self = .additional(id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID())
+        default:
+            self = .any
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .any:
+            try container.encode("any", forKey: .kind)
+        case .main:
+            try container.encode("main", forKey: .kind)
+        case .additional(let id):
+            try container.encode("additional", forKey: .kind)
+            try container.encode(id, forKey: .id)
+        }
+    }
+
+    /// Whether a branch with this scope applies to an event fired by `firing`.
+    func matches(firing: BranchTriggerScope) -> Bool {
+        switch self {
+        case .any:
+            return true
+        case .main:
+            return firing == .main
+        case .additional(let id):
+            return firing == .additional(id: id)
+        }
+    }
+}
+
+// MARK: - Nested condition blocks (if / else, arbitrary depth)
+
+/// One step inside a condition block: either an action, or a nested `if` block.
+/// This indirection is what makes branching hierarchical.
+indirect enum BranchStep: Identifiable, Equatable, Codable {
+    case action(Action)
+    case block(BranchBlock)
+
+    private enum StepCodingKeys: String, CodingKey {
+        case action, block
+    }
+
+    /// Custom Codable so profiles stay hand-editable: one key per case
+    /// (`{"action": {...}}` or `{"block": {...}}`), no positional `_0` keys.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: StepCodingKeys.self)
+        if let action = try container.decodeIfPresent(Action.self, forKey: .action) {
+            self = .action(action)
+        } else if let block = try container.decodeIfPresent(BranchBlock.self, forKey: .block) {
+            self = .block(block)
+        } else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "BranchStep must contain either an \"action\" or a \"block\"."
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: StepCodingKeys.self)
+        switch self {
+        case .action(let action): try container.encode(action, forKey: .action)
+        case .block(let block): try container.encode(block, forKey: .block)
+        }
+    }
+
+    var id: UUID {
+        switch self {
+        case .action(let action): return action.id
+        case .block(let block): return block.id
+        }
+    }
+
+    var isAction: Bool {
+        if case .action = self { return true }
+        return false
+    }
+}
+
+/// A run-time `if` block with a `then` list and an `else` list, each containing
+/// mixed steps — actions and further nested blocks. Conditions empty = always
+/// matches. An empty `elseSteps` means no `else` clause (failure skips the block).
+struct BranchBlock: Identifiable, Equatable, Codable {
+    var id = UUID()
+    /// Conditions gating the `then` steps. Empty means "always matches".
+    var conditions: [Condition] = []
+    /// `true` = ALL conditions must match (AND); `false` = ANY match (OR).
+    var matchAll: Bool = true
+    /// Which trigger(s) this block applies to. `.any` (default) covers all.
+    var triggerScope: BranchTriggerScope = .any
+    var thenSteps: [BranchStep] = []
+    var elseSteps: [BranchStep] = []
+
+    var containsActions: Bool {
+        containsActions(in: thenSteps) || containsActions(in: elseSteps)
+    }
+
+    private func containsActions(in steps: [BranchStep]) -> Bool {
+        steps.contains { step in
+            switch step {
+            case .action: return true
+            case .block(let nested): return nested.containsActions
+            }
+        }
+    }
+
+    /// Total actions nested anywhere inside this block (for cheap diffing).
+    var actionCount: Int {
+        BranchBlock.actionCount(in: thenSteps) + BranchBlock.actionCount(in: elseSteps)
+    }
+
+    static func actionCount(in steps: [BranchStep]) -> Int {
+        steps.reduce(0) { count, step in
+            switch step {
+            case .action: return count + 1
+            case .block(let nested): return count + nested.actionCount
+            }
+        }
+    }
+
+    /// Total conditions nested anywhere inside this block (for cheap diffing).
+    var conditionCount: Int {
+        conditions.count + BranchBlock.conditionCount(in: thenSteps) + BranchBlock.conditionCount(in: elseSteps)
+    }
+
+    static func conditionCount(in steps: [BranchStep]) -> Int {
+        steps.reduce(0) { count, step in
+            switch step {
+            case .action: return count
+            case .block(let nested): return count + nested.conditionCount
+            }
+        }
+    }
+
+    var summary: String {
+        if conditions.isEmpty { return "always" }
+        let joined = conditions.map(\.summary).joined(separator: matchAll ? "  AND  " : "  OR  ")
+        if triggerScope != .any {
+            return "\(scopeSummary): \(joined)"
+        }
+        return joined
+    }
+
+    var scopeSummary: String {
+        switch triggerScope {
+        case .any: return "Any trigger"
+        case .main: return "Main trigger"
+        case .additional: return "Extra trigger"
+        }
+    }
+}
+
+private enum BlockCodingKeys: String, CodingKey {
+    case id, conditions, matchAll, triggerScope, thenSteps, elseSteps
+}
+
+extension BranchBlock {
+    /// Lenient decode: every field carries a sensible default so profiles
+    /// written by earlier versions (or by hand) still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: BlockCodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        conditions = try container.decodeIfPresent([Condition].self, forKey: .conditions) ?? []
+        matchAll = try container.decodeIfPresent(Bool.self, forKey: .matchAll) ?? true
+        triggerScope = try container.decodeIfPresent(BranchTriggerScope.self, forKey: .triggerScope) ?? .any
+        thenSteps = try container.decodeIfPresent([BranchStep].self, forKey: .thenSteps) ?? []
+        elseSteps = try container.decodeIfPresent([BranchStep].self, forKey: .elseSteps) ?? []
     }
 }
 
@@ -1100,8 +1337,6 @@ final class ActionStorage: Codable, Equatable {
 
     var tapCount: Int = 1
 
-    var actionConditions: [Condition] = []
-
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -1141,7 +1376,6 @@ final class ActionStorage: Codable, Equatable {
         textTransformKind = try container.decodeIfPresent(TextTransformKind.self, forKey: .textTransformKind)
         numberValue = try container.decodeIfPresent(Int.self, forKey: .numberValue)
         tapCount = try container.decodeIfPresent(Int.self, forKey: .tapCount) ?? 1
-        actionConditions = try container.decodeIfPresent([Condition].self, forKey: .actionConditions) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1181,7 +1415,6 @@ final class ActionStorage: Codable, Equatable {
         try container.encodeIfPresent(textTransformKind, forKey: .textTransformKind)
         try container.encodeIfPresent(numberValue, forKey: .numberValue)
         try container.encode(tapCount, forKey: .tapCount)
-        try container.encode(actionConditions, forKey: .actionConditions)
     }
 
     static func == (lhs: ActionStorage, rhs: ActionStorage) -> Bool {
@@ -1220,7 +1453,6 @@ final class ActionStorage: Codable, Equatable {
         guard lhs.textTransformKind == rhs.textTransformKind else { return false }
         guard lhs.numberValue == rhs.numberValue else { return false }
         guard lhs.tapCount == rhs.tapCount else { return false }
-        guard lhs.actionConditions == rhs.actionConditions else { return false }
         return true
     }
 
@@ -1231,7 +1463,7 @@ final class ActionStorage: Codable, Equatable {
         case shellCommand, appBundleID, appName, urlString, shortcutName, scriptBody
         case namedTrigger, userCommand, delaySeconds, holdDownMilliseconds
         case cursorPositionX, cursorPositionY, isLazy, isRepeatEnabled
-        case windowActionKind, textTransformKind, numberValue, tapCount, actionConditions
+        case windowActionKind, textTransformKind, numberValue, tapCount
     }
 }
 
@@ -1281,7 +1513,6 @@ struct Action: Identifiable, Equatable, Codable {
             _storage.textTransformKind = old.textTransformKind
             _storage.numberValue = old.numberValue
             _storage.tapCount = old.tapCount
-            _storage.actionConditions = old.actionConditions
         }
     }
 
@@ -1460,16 +1691,11 @@ struct Action: Identifiable, Equatable, Codable {
         set { copyIfNeeded(); _storage.tapCount = newValue }
     }
 
-    var actionConditions: [Condition] {
-        get { _storage.actionConditions }
-        set { copyIfNeeded(); _storage.actionConditions = newValue }
-    }
-
     // MARK: - Initializers
 
     init() {}
 
-    init(kind: ActionKind = .sendKey, fireMode: ActionFireMode = .onKeyDown, toKey: String = "", toModifiers: Set<ModifierKey> = [], consumerKey: ConsumerKeyCode? = nil, pointingButton: PointingButton? = nil, mouseKey: MouseKeyAction = .init(), stickyModifier: StickyModifierAction = .init(), softwareFunction: SoftwareFunctionKind = .doubleClick, appPath: String = "", inputSourceID: String = "", notificationMessage: String = "", text: String = "", variableName: String = "", variableValue: String = "", toggleInitialState: Bool = true, shellCommand: String = "", appBundleID: String = "", appName: String = "", urlString: String = "", shortcutName: String = "", scriptBody: String = "", namedTrigger: String = "", userCommand: String = "", delaySeconds: Double = 0.1, holdDownMilliseconds: Int = 0, cursorPositionX: Int = 0, cursorPositionY: Int = 0, isLazy: Bool = false, isRepeatEnabled: Bool? = nil, windowActionKind: WindowActionKind? = nil, textTransformKind: TextTransformKind? = nil, numberValue: Int? = nil, tapCount: Int = 1, actionConditions: [Condition] = []) {
+    init(kind: ActionKind = .sendKey, fireMode: ActionFireMode = .onKeyDown, toKey: String = "", toModifiers: Set<ModifierKey> = [], consumerKey: ConsumerKeyCode? = nil, pointingButton: PointingButton? = nil, mouseKey: MouseKeyAction = .init(), stickyModifier: StickyModifierAction = .init(), softwareFunction: SoftwareFunctionKind = .doubleClick, appPath: String = "", inputSourceID: String = "", notificationMessage: String = "", text: String = "", variableName: String = "", variableValue: String = "", toggleInitialState: Bool = true, shellCommand: String = "", appBundleID: String = "", appName: String = "", urlString: String = "", shortcutName: String = "", scriptBody: String = "", namedTrigger: String = "", userCommand: String = "", delaySeconds: Double = 0.1, holdDownMilliseconds: Int = 0, cursorPositionX: Int = 0, cursorPositionY: Int = 0, isLazy: Bool = false, isRepeatEnabled: Bool? = nil, windowActionKind: WindowActionKind? = nil, textTransformKind: TextTransformKind? = nil, numberValue: Int? = nil, tapCount: Int = 1) {
         _storage = ActionStorage()
         _storage.id = UUID()
         _storage.kind = kind
@@ -1506,7 +1732,6 @@ struct Action: Identifiable, Equatable, Codable {
         _storage.textTransformKind = textTransformKind
         _storage.numberValue = numberValue
         _storage.tapCount = tapCount
-        _storage.actionConditions = actionConditions
     }
 
     // MARK: - Codable
@@ -1567,7 +1792,6 @@ struct Action: Identifiable, Equatable, Codable {
         s.textTransformKind = _storage.textTransformKind
         s.numberValue = _storage.numberValue
         s.tapCount = _storage.tapCount
-        s.actionConditions = _storage.actionConditions
         return copy
     }
 
@@ -1789,7 +2013,6 @@ struct Action: Identifiable, Equatable, Codable {
 struct AdditionalTrigger: Identifiable, Equatable, Codable {
     var id = UUID()
     var trigger: ManipulatorTrigger = .init()
-    var conditions: [Condition] = []
 }
 
 // MARK: - Manipulator
@@ -1824,10 +2047,21 @@ struct Manipulator: Identifiable, Hashable, Codable {
     var tags: Set<String> = []
     var manipulatorType: ManipulatorType = .basic
     var trigger: ManipulatorTrigger = .init()
-    var conditions: [Condition] = []
+    /// Direct actions, used when the manipulator has no conditional branching
+    /// (simple mode: trigger fires → run these).
     var actions: [Action] = []
+    /// Root of the hierarchical if/else block tree. `nil` = simple mode.
+    /// The root block's `then` steps run when its conditions match; its
+    /// `else` steps run otherwise; nested blocks behave the same recursively.
+    var rootBlock: BranchBlock? = nil
     var parameters: ManipulatorParameters = .init()
     var additionalTriggers: [AdditionalTrigger] = []
+
+    /// Whether this manipulator routes through the if/else block tree
+    /// instead of running `actions` directly.
+    var usesConditionalBranches: Bool {
+        rootBlock != nil
+    }
 
     // MARK: - Equatable (fast path: compare by ID for SwiftUI diffs)
     // SwiftUI only needs to know if the struct *changed*, not deep-compare
@@ -1842,16 +2076,55 @@ struct Manipulator: Identifiable, Hashable, Codable {
             && lhs.manipulatorType == rhs.manipulatorType
             && lhs.trigger == rhs.trigger
             && lhs.actions.count == rhs.actions.count
-            && lhs.conditions.count == rhs.conditions.count
+            && lhs.rootBlock?.id == rhs.rootBlock?.id
+            && lhs.branchActionCount == rhs.branchActionCount
+            && lhs.branchConditionCount == rhs.branchConditionCount
+            && lhs.branchStructureHash == rhs.branchStructureHash
             && lhs.additionalTriggers.count == rhs.additionalTriggers.count
             && lhs.parameters == rhs.parameters
+    }
+
+    /// Total actions nested inside the block tree (for cheap diffing).
+    var branchActionCount: Int {
+        rootBlock?.actionCount ?? 0
+    }
+
+    /// Total conditions nested inside the block tree (for cheap diffing).
+    var branchConditionCount: Int {
+        rootBlock?.conditionCount ?? 0
+    }
+
+    /// Order-sensitive fingerprint of the whole block tree: step ids, block
+    /// ids, condition ids and their order. Two trees that differ structurally
+    /// (insert, move, wrap, condition order) always differ here, which keeps
+    /// equality-based diffing (SwiftUI, undo, watcher) correct for empty
+    /// blocks too — adding a blank `if` changes no action/condition counts.
+    var branchStructureHash: Int {
+        guard let root = rootBlock else { return 0 }
+        var h = 0
+        func mixStep(_ step: BranchStep) {
+            h = h &* 31 &+ step.id.hashValue
+            if case .block(let block) = step {
+                mixBlock(block)
+            }
+        }
+        func mixBlock(_ block: BranchBlock) {
+            h = h &* 31 &+ block.id.hashValue
+            for condition in block.conditions {
+                h = h &* 31 &+ condition.id.hashValue
+            }
+            for step in block.thenSteps { mixStep(step) }
+            for step in block.elseSteps { mixStep(step) }
+        }
+        mixBlock(root)
+        return h
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
 
-    init(id: UUID = UUID(), name: String = "New Manipulator", notes: String = "", folder: String = "", isEnabled: Bool = true, tags: Set<String> = [], manipulatorType: ManipulatorType = .basic, trigger: ManipulatorTrigger = .init(), conditions: [Condition] = [], actions: [Action] = [], parameters: ManipulatorParameters = .init(), additionalTriggers: [AdditionalTrigger] = []) {
+    init(id: UUID = UUID(), name: String = "New Manipulator", notes: String = "", folder: String = "", isEnabled: Bool = true, tags: Set<String> = [], manipulatorType: ManipulatorType = .basic, trigger: ManipulatorTrigger = .init(), actions: [Action] = [], rootBlock: BranchBlock? = nil, parameters: ManipulatorParameters = .init(), additionalTriggers: [AdditionalTrigger] = []) {
         self.id = id
         self.name = name
         self.notes = notes
@@ -1860,43 +2133,229 @@ struct Manipulator: Identifiable, Hashable, Codable {
         self.tags = tags
         self.manipulatorType = manipulatorType
         self.trigger = trigger
-        self.conditions = conditions
         self.actions = actions
+        self.rootBlock = rootBlock
         self.parameters = parameters
         self.additionalTriggers = additionalTriggers
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, isStarred, notes, folder, isEnabled, tags
+        case manipulatorType, trigger, actions
+        case rootBlock
+        case parameters, additionalTriggers
+        /// Legacy flat condition list (pre-branch format). Migrated on load.
+        case legacyConditions = "conditions"
+        /// Legacy if/elif chain fields (pre-tree format). Migrated on load.
+        case legacyConditionBranches = "conditionBranches"
+        case legacyHasElseBranch = "hasElseBranch"
+        case legacyElseActions = "elseActions"
+    }
+
+    /// Legacy per-action gate, read only for one-time migration.
+    private struct LegacyActionGate: Decodable {
+        var actionConditions: [Condition] = []
+
+        enum CodingKeys: String, CodingKey {
+            case actionConditions
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            actionConditions = try container.decodeIfPresent([Condition].self, forKey: .actionConditions) ?? []
+        }
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? "New Manipulator"
+        isStarred = try container.decodeIfPresent(Bool.self, forKey: .isStarred) ?? false
         notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
         folder = try container.decodeIfPresent(String.self, forKey: .folder) ?? ""
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
         tags = try container.decodeIfPresent(Set<String>.self, forKey: .tags) ?? []
         manipulatorType = try container.decodeIfPresent(ManipulatorType.self, forKey: .manipulatorType) ?? .basic
         trigger = try container.decodeIfPresent(ManipulatorTrigger.self, forKey: .trigger) ?? .init()
-        conditions = try container.decodeIfPresent([Condition].self, forKey: .conditions) ?? []
-        actions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
         parameters = try container.decodeIfPresent(ManipulatorParameters.self, forKey: .parameters) ?? .init()
         additionalTriggers = try container.decodeIfPresent([AdditionalTrigger].self, forKey: .additionalTriggers) ?? []
+
+        if let decodedRoot = try? container.decodeIfPresent(BranchBlock.self, forKey: .rootBlock), decodedRoot != nil {
+            // Current hierarchical format.
+            rootBlock = decodedRoot
+            actions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        } else if container.contains(.legacyConditionBranches) || container.contains(.legacyHasElseBranch) || container.contains(.legacyElseActions) {
+            // Branch-chain format: fold the if/elif chain + else into the tree.
+            let branches = try container.decodeIfPresent([LegacyConditionBranch].self, forKey: .legacyConditionBranches) ?? []
+            let hasElse = try container.decodeIfPresent(Bool.self, forKey: .legacyHasElseBranch) ?? false
+            let elseActions = try container.decodeIfPresent([Action].self, forKey: .legacyElseActions) ?? []
+            actions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
+            rootBlock = Self.treeFromBranchChain(branches: branches, hasElse: hasElse, elseActions: elseActions)
+        } else {
+            // Legacy flat format: migrate into the tree.
+            // Old semantics: if `conditions` met, run each action whose own
+            // per-action conditions are also met.
+            let legacyGate = try container.decodeIfPresent([Condition].self, forKey: .legacyConditions) ?? []
+            let rawActions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
+            let legacyGates = (try? container.decode([LegacyActionGate].self, forKey: .actions)) ?? []
+            var gated: [(action: Action, gate: [Condition])] = []
+            var ungated: [Action] = []
+            for (index, action) in rawActions.enumerated() {
+                let gate = index < legacyGates.count ? legacyGates[index].actionConditions : []
+                if gate.isEmpty {
+                    ungated.append(action)
+                } else {
+                    gated.append((action, gate))
+                }
+            }
+
+            if legacyGate.isEmpty && gated.isEmpty {
+                // Unconditional — stays in simple mode.
+                actions = rawActions
+                rootBlock = nil
+            } else {
+                var branches: [LegacyConditionBranch] = []
+                for item in gated {
+                    branches.append(LegacyConditionBranch(
+                        conditions: legacyGate + item.gate,
+                        actions: [item.action]
+                    ))
+                }
+                var hasElse = false
+                var elseActions: [Action] = []
+                if !ungated.isEmpty {
+                    if legacyGate.isEmpty {
+                        // Gated actions became branches; the rest fall to else.
+                        hasElse = true
+                        elseActions = ungated
+                    } else {
+                        // Ungated actions still need the legacy gate.
+                        branches.append(LegacyConditionBranch(conditions: legacyGate, actions: ungated))
+                    }
+                }
+                // A lone legacy gate with no per-action gates is a single if.
+                if branches.isEmpty && !legacyGate.isEmpty {
+                    branches.append(LegacyConditionBranch(conditions: legacyGate, actions: ungated))
+                }
+                rootBlock = Self.treeFromBranchChain(branches: branches, hasElse: hasElse, elseActions: elseActions)
+                actions = []
+            }
+        }
+    }
+
+    /// Fold a flat `if / elif / else` chain into an equivalent nested tree:
+    /// each `elif` becomes an `if` block nested in the previous `else`, and the
+    /// legacy else actions land in the innermost `else` list.
+    private static func treeFromBranchChain(branches: [LegacyConditionBranch], hasElse: Bool, elseActions: [Action]) -> BranchBlock? {
+        guard !branches.isEmpty || (!elseActions.isEmpty) else { return nil }
+        let elseSteps: [BranchStep] = elseActions.map { .action($0) }
+        guard let first = branches.first else {
+            // Else only: a single always-true block holding the else actions.
+            return BranchBlock(conditions: [], thenSteps: [], elseSteps: elseSteps)
+        }
+        if branches.count == 1, !hasElse {
+            return treeBranch(first, elseSteps: [])
+        }
+        // Build the else-fallback chain right-to-left.
+        var fallback: [BranchStep]
+        if hasElse {
+            fallback = elseSteps
+        } else {
+            fallback = []
+        }
+        for branch in branches.reversed() {
+            guard branch.id != first.id else { break }
+            fallback = [.block(treeBranch(branch, elseSteps: fallback))]
+        }
+        return treeBranch(first, elseSteps: fallback)
+    }
+
+    private static func treeBranch(_ branch: LegacyConditionBranch, elseSteps: [BranchStep]) -> BranchBlock {
+        BranchBlock(
+            id: branch.id ?? UUID(),
+            conditions: branch.conditions,
+            matchAll: branch.matchAll,
+            triggerScope: branch.triggerScope ?? .any,
+            thenSteps: branch.actions.map { .action($0) },
+            elseSteps: elseSteps
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isStarred, forKey: .isStarred)
+        try container.encode(notes, forKey: .notes)
+        try container.encode(folder, forKey: .folder)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(manipulatorType, forKey: .manipulatorType)
+        try container.encode(trigger, forKey: .trigger)
+        try container.encode(actions, forKey: .actions)
+        try container.encode(rootBlock, forKey: .rootBlock)
+        try container.encode(parameters, forKey: .parameters)
+        try container.encode(additionalTriggers, forKey: .additionalTriggers)
     }
 
     var summary: String {
         let trigger = self.trigger.displayLabel
         let additionalSuffix: String
         if !additionalTriggers.isEmpty {
-            additionalSuffix = " (+\\(additionalTriggers.count) more)"
+            additionalSuffix = " (+\(additionalTriggers.count) more)"
         } else {
             additionalSuffix = ""
         }
-        if conditions.isEmpty {
-            if let first = actions.first {
-                return "\(trigger)\(additionalSuffix) → \(first.summary)"
-            }
-            return "\(trigger)\(additionalSuffix) → No actions"
+        if let root = rootBlock {
+            let firstSummary = root.conditions.first?.summary ?? "always"
+            let targetActions = Self.firstAction(in: root.thenSteps) ?? Self.firstAction(in: root.elseSteps) ?? actions.first
+            return "\(trigger)\(additionalSuffix) if \(firstSummary) → \(targetActions?.summary ?? "…")"
         }
-        return "\(trigger)\(additionalSuffix) if \(conditions[0].summary) → \(actions.first?.summary ?? "…")"
+        if let first = actions.first {
+            return "\(trigger)\(additionalSuffix) → \(first.summary)"
+        }
+        return "\(trigger)\(additionalSuffix) → No actions"
+    }
+
+    /// First action found depth-first in a step list (for summaries).
+    static func firstAction(in steps: [BranchStep]) -> Action? {
+        for step in steps {
+            switch step {
+            case .action(let action): return action
+            case .block(let nested):
+                if let action = firstAction(in: nested.thenSteps) { return action }
+                if let action = firstAction(in: nested.elseSteps) { return action }
+            }
+        }
+        return nil
+    }
+}
+
+/// Legacy `if / elif` chain branch from older profile formats. Decode-only:
+/// read during migration, immediately folded into a `BranchBlock` tree.
+private struct LegacyConditionBranch: Decodable {
+    var id: UUID? = nil
+    var conditions: [Condition] = []
+    var matchAll: Bool = true
+    var actions: [Action] = []
+    var triggerScope: BranchTriggerScope? = nil
+
+    private enum Keys: String, CodingKey {
+        case id, conditions, matchAll, actions, triggerScope
+    }
+
+    init(conditions: [Condition], actions: [Action]) {
+        self.conditions = conditions
+        self.actions = actions
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id)
+        conditions = try container.decodeIfPresent([Condition].self, forKey: .conditions) ?? []
+        matchAll = try container.decodeIfPresent(Bool.self, forKey: .matchAll) ?? true
+        actions = try container.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        triggerScope = try container.decodeIfPresent(BranchTriggerScope.self, forKey: .triggerScope)
     }
 }
 

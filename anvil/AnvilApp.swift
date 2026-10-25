@@ -10,6 +10,8 @@ final class StatusBarController: NSObject {
     private var statusItems: [UUID: NSStatusItem] = [:]
     private var store: RemapStore?
     private var cancellables: Set<AnyCancellable> = []
+    private var rebuildWorkItem: DispatchWorkItem?
+    private var iconCache: [String: NSImage] = [:]
 
     func install() {
         guard statusItems.isEmpty else { return }
@@ -17,12 +19,31 @@ final class StatusBarController: NSObject {
     }
 
     func attach(store: RemapStore) {
+        // Guard against double-attach (ContentView + Settings both call attach).
+        if self.store === store, !cancellables.isEmpty { return }
+        cancellables.removeAll()
         self.store = store
         rebuildAll()
         store.$menuBarItems
+            .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuildAll() }
+            .sink { [weak self] _ in self?.scheduleRebuild() }
             .store(in: &cancellables)
+    }
+
+    private func scheduleRebuild() {
+        rebuildWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.rebuildAll() }
+        rebuildWorkItem = work
+        DispatchQueue.main.async(execute: work)
+    }
+
+    private func cachedIcon(named name: String, fallback: String = "circle") -> NSImage? {
+        let key = name.isEmpty ? fallback : name
+        if let cached = iconCache[key] { return cached }
+        let image = NSImage(systemSymbolName: key, accessibilityDescription: key)
+        if let image { iconCache[key] = image }
+        return image
     }
 
     func removeAll() {
@@ -69,14 +90,14 @@ final class StatusBarController: NSObject {
 
     private func addStatusItem(id: UUID, icon: String, menu: NSMenu?) -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: icon, accessibilityDescription: "")
+        item.button?.image = cachedIcon(named: icon)
         item.menu = menu
         statusItems[id] = item
         return item
     }
 
     private func configure(_ statusItem: NSStatusItem, with mbItem: MenuBarItem) {
-        statusItem.button?.image = NSImage(systemSymbolName: mbItem.icon.isEmpty ? "circle" : mbItem.icon, accessibilityDescription: mbItem.name)
+        statusItem.button?.image = cachedIcon(named: mbItem.icon)
         statusItem.button?.toolTip = mbItem.name
 
         if !mbItem.children.isEmpty {
@@ -120,13 +141,13 @@ final class StatusBarController: NSObject {
                 menu.addItem(.separator())
             } else if child.children.isEmpty {
                 let mi = makeActionItem(title: child.name, id: child.id, useRight: false)
-                if !child.icon.isEmpty { mi.image = NSImage(systemSymbolName: child.icon, accessibilityDescription: child.name) }
+                if !child.icon.isEmpty { mi.image = cachedIcon(named: child.icon) }
                 menu.addItem(mi)
             } else {
                 let sub = buildSubmenu(for: child)
                 let pi = NSMenuItem(title: child.name, action: nil, keyEquivalent: "")
                 pi.submenu = sub
-                if !child.icon.isEmpty { pi.image = NSImage(systemSymbolName: child.icon, accessibilityDescription: child.name) }
+                if !child.icon.isEmpty { pi.image = cachedIcon(named: child.icon) }
                 menu.addItem(pi)
             }
         }
@@ -159,13 +180,13 @@ final class StatusBarController: NSObject {
                 sub.addItem(.separator())
             } else if child.children.isEmpty {
                 let mi = makeActionItem(title: child.name, id: child.id, useRight: false)
-                if !child.icon.isEmpty { mi.image = NSImage(systemSymbolName: child.icon, accessibilityDescription: child.name) }
+                if !child.icon.isEmpty { mi.image = cachedIcon(named: child.icon) }
                 sub.addItem(mi)
             } else {
                 let nestedSub = buildSubmenu(for: child)
                 let pi = NSMenuItem(title: child.name, action: nil, keyEquivalent: "")
                 pi.submenu = nestedSub
-                if !child.icon.isEmpty { pi.image = NSImage(systemSymbolName: child.icon, accessibilityDescription: child.name) }
+                if !child.icon.isEmpty { pi.image = cachedIcon(named: child.icon) }
                 sub.addItem(pi)
             }
         }
@@ -305,6 +326,70 @@ struct AnvilApp: App {
                     set: { _ in store.toggleMacroPalette() }
                 ))
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            }
+
+            CommandMenu("Manipulator") {
+                if let selectedManipulator = store.manipulators.first(where: { $0.id == store.selectedManipulatorID }) {
+                    Button("Duplicate Manipulator") {
+                        store.duplicateManipulator(selectedManipulator.id)
+                    }
+                    .keyboardShortcut("d", modifiers: [.command])
+
+                    Button("Delete Manipulator") {
+                        store.deleteManipulator(selectedManipulator.id)
+                    }
+                    .keyboardShortcut(.delete, modifiers: [.command])
+
+                    Divider()
+
+                    Button(selectedManipulator.isEnabled ? "Disable Manipulator" : "Enable Manipulator") {
+                        store.toggleEnabled(selectedManipulator.id)
+                    }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                    Button(selectedManipulator.isStarred ? "Unstar Manipulator" : "Star Manipulator") {
+                        store.toggleStarred(selectedManipulator.id)
+                    }
+
+                    Divider()
+
+                    Button("Select Next Manipulator") {
+                        store.selectNextManipulator()
+                    }
+                    .keyboardShortcut(.downArrow, modifiers: [.control, .command])
+
+                    Button("Select Previous Manipulator") {
+                        store.selectPreviousManipulator()
+                    }
+                    .keyboardShortcut(.upArrow, modifiers: [.control, .command])
+                } else {
+                    Button("Duplicate Manipulator") { }
+                    .disabled(true)
+                    .keyboardShortcut("d", modifiers: [.command])
+
+                    Button("Delete Manipulator") { }
+                    .disabled(true)
+                    .keyboardShortcut(.delete, modifiers: [.command])
+
+                    Divider()
+
+                    Button("Enable Manipulator") { }
+                    .disabled(true)
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                    Button("Star Manipulator") { }
+                    .disabled(true)
+
+                    Divider()
+
+                    Button("Select Next Manipulator") { }
+                    .disabled(true)
+                    .keyboardShortcut(.downArrow, modifiers: [.control, .command])
+
+                    Button("Select Previous Manipulator") { }
+                    .disabled(true)
+                    .keyboardShortcut(.upArrow, modifiers: [.control, .command])
+                }
             }
         }
 

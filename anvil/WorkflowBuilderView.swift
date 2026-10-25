@@ -3,8 +3,8 @@ import UniformTypeIdentifiers
 
 // MARK: - Visual Workflow Builder
 
-/// A drag-and-drop visual flow builder that renders a manipulator's trigger,
-/// conditions, and actions as connected, reorderable nodes on a canvas.
+/// A native list rendering of a manipulator's trigger, nested if/else
+/// blocks, and actions. Rows reorder via drag and delete via swipe.
 struct WorkflowBuilderView: View {
     @ObservedObject var store: RemapStore
     let manipulator: Manipulator
@@ -14,151 +14,198 @@ struct WorkflowBuilderView: View {
     private var mid: UUID { manipulator.id }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(spacing: 0) {
-                // ── Header badge ──
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.triangle.branch")
+        List {
+            Section("Trigger") {
+                VStack(alignment: .leading) {
+                    Text(manipulator.trigger.displayLabel)
+                    Text(manipulator.trigger.keyType.rawValue)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text("Flow View")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
                 }
-                .padding(.bottom, 16)
-
-                // ── Trigger ──
-                WorkflowTriggerNode(trigger: manipulator.trigger)
-                    .padding(.bottom, 12)
-
-                // ── Conditions ──
-                if !manipulator.conditions.isEmpty || manipulator.actions.isEmpty {
-                    // Show the section even when empty so user can add
-                    HStack(spacing: 8) {
-                        WorkflowArrow()
-                        sectionLabel("When all conditions match")
-                    }
-                    .padding(.bottom, 8)
-
-                    VStack(spacing: 0) {
-                        ForEach(Array(zip(manipulator.conditions.indices, manipulator.conditions)), id: \.1.id) { idx, condition in
-                            WorkflowConditionNode(
-                                condition: condition,
-                                manipulatorID: mid,
-                                store: store
-                            )
-                            .onDrag {
-                                draggedItemID = "condition:\(condition.id)"
-                                return NSItemProvider(object: condition.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [.text],
-                                delegate: WorkflowDropDelegate(
-                                    targetID: condition.id,
-                                    targetKind: .condition,
-                                    manipulatorID: mid,
-                                    store: store,
-                                    draggedItemID: $draggedItemID
-                                )
-                            )
-                            .transition(.opacity.combined(with: .slide))
-
-                            if idx < manipulator.conditions.count - 1 {
-                                WorkflowArrow()
-                            }
-                        }
-                    }
-                }
-
-                // ── Add condition button ──
-                WorkflowAddButton(
-                    label: "Add Condition",
-                    icon: "plus.rhombus",
-                    action: { store.addCondition(to: mid) }
-                )
-                .padding(.vertical, 8)
-
-                // ── Actions ──
-                WorkflowArrow()
-                    .padding(.bottom, 4)
-
-                HStack(spacing: 8) {
-                    WorkflowArrow()
-                    sectionLabel("Then execute in order")
-                }
-                .padding(.bottom, 8)
-
-                if !manipulator.actions.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(Array(zip(manipulator.actions.indices, manipulator.actions)), id: \.1.id) { idx, action in
-                            WorkflowActionNode(
-                                action: action,
-                                manipulatorID: mid,
-                                store: store
-                            )
-                            .onDrag {
-                                draggedItemID = "action:\(action.id)"
-                                return NSItemProvider(object: action.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [.text],
-                                delegate: WorkflowDropDelegate(
-                                    targetID: action.id,
-                                    targetKind: .action,
-                                    manipulatorID: mid,
-                                    store: store,
-                                    draggedItemID: $draggedItemID
-                                )
-                            )
-                            .transition(.opacity.combined(with: .slide))
-
-                            if idx < manipulator.actions.count - 1 {
-                                WorkflowArrow()
-                            }
-                        }
-                    }
-                }
-
-                // ── Add action button ──
-                WorkflowAddButton(
-                    label: "Add Action",
-                    icon: "plus",
-                    action: { store.addActionTo(mid) }
-                )
-                .padding(.vertical, 8)
-
-                Spacer().frame(height: 40)
             }
-            .padding(20)
-            .frame(maxWidth: 520)
-            .frame(maxWidth: .infinity)
+
+            if !manipulator.usesConditionalBranches {
+                Section("Actions") {
+                    ForEach(manipulator.actions) { action in
+                        WorkflowActionRow(
+                            action: action,
+                            onDelete: { store.removeAction(action.id, from: mid) }
+                        )
+                        .onDrag {
+                            draggedItemID = "step:direct|then:\(action.id)"
+                            return NSItemProvider(object: "step:direct|then:\(action.id)" as NSString)
+                        }
+                        .onDrop(
+                            of: [.text],
+                            delegate: WorkflowDropDelegate(
+                                targetID: action.id,
+                                listScope: .directThen,
+                                manipulatorID: mid,
+                                store: store,
+                                draggedItemID: $draggedItemID
+                            )
+                        )
+                    }
+                    Button("Add Action") { store.addActionTo(mid) }
+                    Button("Add If Condition") { store.convertToConditional(mid) }
+                }
+            } else if let root = manipulator.rootBlock {
+                WorkflowBlockRows(
+                    manipulator: manipulator,
+                    block: root,
+                    depth: 0,
+                    draggedItemID: $draggedItemID,
+                    store: store
+                )
+
+                Section {
+                    Button("Flatten to Simple Mode") { store.exitConditionalMode(mid) }
+                }
+            }
         }
-        .background(Color(.windowBackgroundColor))
-    }
-
-    // MARK: - Section Label
-
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-// MARK: - Drag-and-drop kind
+// MARK: - Nested block rows (recursive)
 
-private enum DropKind {
-    case condition
-    case action
+/// Renders one block as list sections: its conditions, then-steps and
+/// (when present) else-steps. Nested blocks recurse with an "inside" label.
+private struct WorkflowBlockRows: View {
+    let manipulator: Manipulator
+    let block: BranchBlock
+    let depth: Int
+    @Binding var draggedItemID: String?
+    @ObservedObject var store: RemapStore
+
+    private var mid: UUID { manipulator.id }
+
+    var body: some View {
+        Section(depth == 0 ? "If" : "If (nested ×\(depth))") {
+            if block.conditions.isEmpty {
+                Text("Always matches — add a condition to gate it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(block.conditions) { condition in
+                WorkflowConditionRow(
+                    condition: condition,
+                    onDelete: {
+                        store.removeBlockCondition(mid, conditionID: condition.id, fromBlock: block.id)
+                    }
+                )
+                .onDrag {
+                    draggedItemID = "step:\(block.id.uuidString)|condition:\(condition.id)"
+                    return NSItemProvider(object: "step:\(block.id.uuidString)|condition:\(condition.id)" as NSString)
+                }
+                .onDrop(
+                    of: [.text],
+                    delegate: WorkflowDropDelegate(
+                        targetID: condition.id,
+                        listScope: .condition(block: block.id),
+                        manipulatorID: mid,
+                        store: store,
+                        draggedItemID: $draggedItemID
+                    )
+                )
+            }
+            Button("Add Condition") { store.addBlockCondition(mid, to: block.id) }
+
+            MaybeDivider()
+
+            ForEach(Array(block.thenSteps.enumerated()), id: \.element.id) { index, step in
+                workflowStepRow(step, side: .then, blockID: block.id, depth: depth)
+                if index < block.thenSteps.count - 1 {
+                    MaybeDivider()
+                }
+            }
+            if block.thenSteps.isEmpty {
+                Text("No steps in this branch yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Add Then Action") {
+                store.addTreeAction(mid, to: block.id, in: \.thenSteps, kind: .sendKey)
+            }
+
+            MaybeDivider()
+
+            if block.elseSteps.isEmpty {
+                Button("Add Else Steps") {
+                    store.addTreeAction(mid, to: block.id, in: \.elseSteps, kind: .sendKey)
+                }
+            } else {
+                Text("Else")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(block.elseSteps) { step in
+                    workflowStepRow(step, side: .otherwise, blockID: block.id, depth: depth)
+                }
+                Button("Add Else Action") {
+                    store.addTreeAction(mid, to: block.id, in: \.elseSteps, kind: .sendKey)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workflowStepRow(_ step: BranchStep, side: BlockSide, blockID: UUID, depth: Int) -> some View {
+        switch step {
+        case .action(let action):
+            WorkflowActionRow(
+                action: action,
+                onDelete: { store.removeTreeStep(action.id, from: mid) }
+            )
+            .onDrag {
+                let scope = "block:\(blockID.uuidString)#\(side.rawValue)"
+                draggedItemID = "step:\(scope):\(action.id)"
+                return NSItemProvider(object: "step:\(scope):\(action.id)" as NSString)
+            }
+            .onDrop(
+                of: [.text],
+                delegate: WorkflowDropDelegate(
+                    targetID: action.id,
+                    listScope: .block(blockID, side),
+                    manipulatorID: mid,
+                    store: store,
+                    draggedItemID: $draggedItemID
+                )
+            )
+        case .block(let nested):
+            WorkflowBlockRows(
+                manipulator: manipulator,
+                block: nested,
+                depth: depth + 1,
+                draggedItemID: $draggedItemID,
+                store: store
+            )
+        }
+    }
+}
+
+private struct MaybeDivider: View {
+    var body: some View {
+        Divider()
+    }
+}
+
+// MARK: - Drag-and-drop targets
+
+/// Identifies which list a drop will reorder. Cheap value type — the
+/// delegate later locates the owning list inside the tree by walking it.
+private enum DropList: Equatable {
+    /// The manipulator's direct actions.
+    case directThen
+    /// A block's condition list.
+    case condition(block: UUID)
+    /// A block's then or else list.
+    case block(UUID, BlockSide)
 }
 
 // MARK: - Drop Delegate
 
 private struct WorkflowDropDelegate: DropDelegate {
     let targetID: UUID
-    let targetKind: DropKind
+    let listScope: DropList
     let manipulatorID: UUID
     let store: RemapStore
     @Binding var draggedItemID: String?
@@ -167,125 +214,138 @@ private struct WorkflowDropDelegate: DropDelegate {
         DropProposal(operation: .move)
     }
 
+    /// Drag payloads look like `step:<scope>:<id>` where scope is
+    /// `direct|then`, `block:<uuid>#then|else`, or `block:<uuid>|condition`.
+    /// Only same-list drops reorder.
+    private func payloadParts(_ payload: String) -> (scope: String, id: UUID)? {
+        let parts = payload.split(separator: ":")
+        guard parts.count == 3, let id = UUID(uuidString: String(parts[2])) else { return nil }
+        return (String(parts[1]), id)
+    }
+
+    private var targetScope: String {
+        switch listScope {
+        case .directThen:
+            return "direct|then"
+        case .condition(let block):
+            return "block:\(block.uuidString)|condition"
+        case .block(let block, let side):
+            return "block:\(block.uuidString)#\(side.rawValue)"
+        }
+    }
+
+    /// A "then" side payload from the direct section uses the shared
+    /// `block:#then` spelling; accept both spellings for it only.
+    private func scopesMatch(_ payloadScope: String) -> Bool {
+        payloadScope == targetScope
+            || (listScope == .directThen && payloadScope == "block:|then")
+    }
+
     func performDrop(info: DropInfo) -> Bool {
         defer { draggedItemID = nil }
         guard let item = info.itemProviders(for: [.text]).first else { return false }
         item.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { data, error in
             guard let data = data as? Data,
-                  let uuidString = String(data: data, encoding: .utf8),
-                  let sourceUUID = UUID(uuidString: uuidString)
+                  let payload = String(data: data, encoding: .utf8),
+                  let parts = payloadParts(payload),
+                  scopesMatch(parts.scope)
             else { return }
+            let sourceID = parts.id
 
             DispatchQueue.main.async {
-                let m = store.manipulators.first(where: { $0.id == manipulatorID })
-                switch targetKind {
-                case .condition:
-                    guard let from = m?.conditions.firstIndex(where: { $0.id == sourceUUID }),
-                          let to = m?.conditions.firstIndex(where: { $0.id == targetID }),
-                          from != to
-                    else { return }
-                    let adjusted = to > from ? to + 1 : to
-                    store.moveCondition(from: IndexSet(integer: from), to: adjusted, in: manipulatorID)
-                case .action:
-                    guard let from = m?.actions.firstIndex(where: { $0.id == sourceUUID }),
-                          let to = m?.actions.firstIndex(where: { $0.id == targetID }),
+                guard let manipulator = store.manipulator(id: manipulatorID) else { return }
+                switch listScope {
+                case .directThen:
+                    guard let from = manipulator.actions.firstIndex(where: { $0.id == sourceID }),
+                          let to = manipulator.actions.firstIndex(where: { $0.id == targetID }),
                           from != to
                     else { return }
                     let adjusted = to > from ? to + 1 : to
                     store.moveAction(from: IndexSet(integer: from), to: adjusted, in: manipulatorID)
+                case .condition(let blockID):
+                    guard let root = manipulator.rootBlock,
+                          let (list, from, to) = Self.locateConditions(root, blockID: blockID, source: sourceID, target: targetID),
+                          from != to
+                    else { return }
+                    let adjusted = to > from ? to + 1 : to
+                    store.moveBlockCondition(manipulatorID, inBlock: blockID, fromOffsets: IndexSet(integer: from), toOffset: adjusted)
+                    _ = list
+                case .block(let blockID, let side):
+                    guard let root = manipulator.rootBlock,
+                          let (_, from, to) = Self.locateSteps(root, blockID: blockID, side: side, source: sourceID, target: targetID),
+                          from != to
+                    else { return }
+                    let adjusted = to > from ? to + 1 : to
+                    store.moveTreeStep(manipulatorID, in: blockID, side: side.keyPath, fromOffsets: IndexSet(integer: from), toOffset: adjusted)
                 }
             }
         }
         return true
     }
-}
 
-// MARK: - Trigger Node
+    // MARK: list location helpers
 
-private struct WorkflowTriggerNode: View {
-    let trigger: ManipulatorTrigger
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: trigger.keyType.symbol)
-                .font(.title3)
-                .foregroundStyle(.tint)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(trigger.displayLabel)
-                    .font(.system(.body, design: .monospaced))
-                    .lineLimit(2)
-                Text(trigger.keyType.rawValue)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+    private static func locateConditions(_ root: BranchBlock, blockID: UUID, source: UUID, target: UUID) -> (list: [Condition], from: Int, to: Int)? {
+        func visit(_ block: BranchBlock, _ found: inout (list: [Condition], from: Int, to: Int)?) -> Bool {
+            if block.id == blockID {
+                guard let f = block.conditions.firstIndex(where: { $0.id == source }),
+                      let t = block.conditions.firstIndex(where: { $0.id == target }) else { return false }
+                found = (block.conditions, f, t)
+                return true
             }
-
-            Spacer()
-
-            if !trigger.triggerName.isEmpty {
-                Text(trigger.triggerName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+            for step in block.thenSteps {
+                if case .block(let nested) = step, visit(nested, &found) { return true }
             }
+            for step in block.elseSteps {
+                if case .block(let nested) = step, visit(nested, &found) { return true }
+            }
+            return false
         }
-        .padding(10)
+        var result: (list: [Condition], from: Int, to: Int)? = nil
+        return visit(root, &result) ? result : nil
+    }
+
+    private static func locateSteps(_ root: BranchBlock, blockID: UUID, side: BlockSide, source: UUID, target: UUID) -> (list: [BranchStep], from: Int, to: Int)? {
+        func list(_ block: BranchBlock) -> [BranchStep] {
+            block[keyPath: side.keyPath]
+        }
+        func visit(_ block: BranchBlock, _ found: inout (list: [BranchStep], from: Int, to: Int)?) -> Bool {
+            if block.id == blockID {
+                let steps = list(block)
+                guard let f = steps.firstIndex(where: { $0.id == source }),
+                      let t = steps.firstIndex(where: { $0.id == target }) else { return false }
+                found = (steps, f, t)
+                return true
+            }
+            for step in block.thenSteps {
+                if case .block(let nested) = step, visit(nested, &found) { return true }
+            }
+            for step in block.elseSteps {
+                if case .block(let nested) = step, visit(nested, &found) { return true }
+            }
+            return false
+        }
+        var result: (list: [BranchStep], from: Int, to: Int)? = nil
+        return visit(root, &result) ? result : nil
     }
 }
 
-// MARK: - Condition Node
+// MARK: - Condition Row
 
-private struct WorkflowConditionNode: View {
+private struct WorkflowConditionRow: View {
     let condition: Condition
-    let manipulatorID: UUID
-    let store: RemapStore
-
-    @State private var isHovered = false
+    let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: condition.kind.symbol)
-                .font(.title3)
-                .foregroundStyle(.indigo)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(condition.kind.rawValue)
-                    .font(.subheadline.weight(.medium))
-                Text(displayValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            // Quick-op actions: delete
-            HStack(spacing: 4) {
-                if isHovered {
-                    Button {
-                        store.removeCondition(condition.id, from: manipulatorID)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.red.opacity(0.7))
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity)
-                }
-                Image(systemName: "line.horizontal.3")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(alignment: .leading) {
+            Label(condition.kind.rawValue, systemImage: condition.kind.symbol)
+            Text(displayValue)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
-        .padding(8)
-        .onHover { isHovered = $0 }
-        .cursor(.openHand)
-        .padding(.horizontal, 4)
-        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
+        .swipeActions {
+            Button("Delete", role: .destructive, action: onDelete)
+        }
     }
 
     private var displayValue: String {
@@ -299,155 +359,22 @@ private struct WorkflowConditionNode: View {
     }
 }
 
-// MARK: - Action Node
+// MARK: - Action Row
 
-private struct WorkflowActionNode: View {
+private struct WorkflowActionRow: View {
     let action: Action
-    let manipulatorID: UUID
-    let store: RemapStore
-
-    @State private var isHovered = false
+    let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: action.kind.symbol)
-                .font(.title3)
-                .foregroundStyle(color)
-                .frame(width: 24)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(action.kind.rawValue)
-                    .font(.subheadline.weight(.medium))
-                Text(action.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer()
-
-            // Fire mode badge
-            if action.fireMode != .onKeyDown {
-                Text(action.fireMode.rawValue)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.quaternary, in: Capsule())
-            }
-
-            // Quick-op buttons
-            HStack(spacing: 4) {
-                if isHovered {
-                    Button {
-                        store.removeAction(action.id, from: manipulatorID)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.red.opacity(0.7))
-                            .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity)
-                }
-                Image(systemName: "line.horizontal.3")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(alignment: .leading) {
+            Label(action.kind.rawValue, systemImage: action.kind.symbol)
+            Text(action.summary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
-        .padding(8)
-        .onHover { isHovered = $0 }
-        .cursor(.openHand)
-        .padding(.horizontal, 4)
-        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var color: Color {
-        switch action.kind {
-        case .halt, .disable: return .red
-        case .delay: return .orange
-        case .setVariable, .unsetVariable, .toggleVariable, .setGlobalVariable, .unsetGlobalVariable: return .teal
-        case .runShell, .runAppleScript, .sendUserCommand, .runShortcut: return .purple
-        case .sendKey, .consumerKey, .pointingButton, .mouseKey, .holdDown, .stickyModifier: return .blue
-        case .sendText: return .cyan
-        case .openApp, .openURL: return .green
-        case .softwareFunction: return .brown
-        case .selectInputSource: return .mint
-        case .setNotification: return .yellow
-        case .fromEvent: return .gray
-        case .executeNamedTrigger, .showPalette, .hidePalette: return .pink
-        case .getSelectedText: return .cyan
-        case .setClipboard, .getClipboard, .clearClipboard: return .orange
-        case .activateApp, .hideApp, .unhideApp, .quitApp, .forceQuitApp, .activateLastApp: return .green
-        case .windowAction: return .indigo
-        case .lockScreen, .showDesktop, .missionControl, .toggleDarkMode, .setVolume,
-             .muteSystem, .emptyTrash, .getBatteryState, .getIPAddress, .toggleHiddenFiles,
-             .logOut, .restartSystem, .shutdownSystem: return .brown
-        case .speakText, .transformText, .calculateExpression: return .cyan
-        case .incrementVariable, .decrementVariable: return .teal
-        case .appendClipboard, .pasteClipboard: return .orange
-        case .httpRequest, .openFile, .openFolder: return .green
-        case .playSound, .flashScreen: return .yellow
+        .swipeActions {
+            Button("Delete", role: .destructive, action: onDelete)
         }
-    }
-}
-
-// MARK: - Arrow
-
-private struct WorkflowArrow: View {
-    var body: some View {
-        Image(systemName: "arrowtriangle.down.fill")
-            .font(.system(size: 8))
-            .foregroundStyle(.tertiary)
-    }
-}
-
-// MARK: - Add button
-
-private struct WorkflowAddButton: View {
-    let label: String
-    let icon: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption)
-                Text(label)
-                    .font(.caption.weight(.medium))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(.quaternary.opacity(0.3), in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .help("Add a new \(label.lowercased())")
-    }
-}
-
-// MARK: - Cursor modifier
-
-private struct CursorModifier: ViewModifier {
-    let cursor: NSCursor
-    @State private var isHovering = false
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                isHovering = hovering
-                if hovering {
-                    cursor.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-    }
-}
-
-private extension View {
-    func cursor(_ cursor: NSCursor) -> some View {
-        modifier(CursorModifier(cursor: cursor))
     }
 }
 
