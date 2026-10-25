@@ -1,4 +1,17 @@
+/* ============================================================
+   ANVIL — skyline site
+   ------------------------------------------------------------
+   1. Every surface reads from the hero theme variables
+      (--sky1 --sky2 --sun --moon --l1..--l10 --lights-on).
+      Change the hero theme and the whole page follows.
+   2. Flat colour only. The gradient inside .landscape is the
+      sky itself — the single exception.
+   3. One accent (var(--sun)), one hairline, a small family of
+      chamfered corners (--cut, --cut-alt, --cut-sm, --slash).
+   ============================================================ */
+
 :root {
+  /* Hero variables — written by script.js, never hard-coded around. */
   --sky1: #3a8fd9;
   --sky2: #bfe3ff;
   --sun: #ffdf5e;
@@ -18,69 +31,133 @@
   --stars-opacity: 0;
   --sun-h: 0;
   --sun-v: 0;
-  --scrollPos: 0px;
+
+  /* Site tokens — derived from the hero vars plus neutrals. */
+  --bg: var(--l1);           /* page base = hero foreground layer, seamless stitch */
+  --panel: var(--l2);        /* cards */
+  --panel-deep: var(--l3);   /* wells */
+  --accent: var(--sun);      /* the one signal colour, follows the time of day */
+  --accent-warm: var(--lights-on);
+  --ink: #ffffff;
+  --muted: rgba(255, 255, 255, 0.72);
+  --faint: rgba(255, 255, 255, 0.52);
+  --line: rgba(255, 255, 255, 0.16);
+  --cut: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+  --cut-alt: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  --cut-sm: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  --slash: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  --font-d: "Arial Narrow", "Helvetica Neue Condensed", "Franklin Gothic Medium", Impact, Haettenschweiler, system-ui, sans-serif;
+  --font-m: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
 
 body {
   margin: 0;
   font-family: system-ui, -apple-system, sans-serif;
-  background: var(--l1);
-  color: #fff;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
 }
 
-.toolbar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 10;
+::selection {
+  background: var(--accent);
+  color: var(--l1);
+}
+
+a {
+  color: inherit;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ================= Theme picker ================= */
+
+.theme-float {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 20;
+  background: var(--bg);
+  border: 0;
+  clip-path: var(--cut-sm);
+  padding: 0.3rem 0.35rem;
+}
+
+.theme-picker {
   display: flex;
   flex-wrap: wrap;
+  gap: 0.15rem;
+}
+
+.theme-picker button {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.75rem 1rem;
-  padding: 0.75rem 1rem;
-  background: linear-gradient(rgba(0, 0, 0, 0.45), transparent);
-}
-
-.toolbar__title {
-  margin: 0;
-  font-size: 1.1rem;
-  font-weight: 650;
-  margin-right: auto;
-}
-
-.toolbar__picker { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-
-.toolbar__picker button {
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  gap: 3px;
   background: transparent;
-  color: #fff;
-  border-radius: 999px;
-  padding: 0.3rem 0.8rem;
-  font: inherit;
-  font-size: 0.85rem;
+  border: none;
+  color: var(--muted);
+  padding: 0.25rem 0.5rem;
+  font-family: var(--font-m);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   cursor: pointer;
+  box-shadow: inset 0 -2px 0 transparent;
 }
 
-.toolbar__picker button[data-active] {
-  background: #fff;
-  color: #111;
-  border-color: #fff;
+.theme-picker button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
+
+.theme-picker button:hover {
+  color: var(--ink);
+}
+
+.theme-picker button[data-active] {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* ================= Hero: the skyline is the hero ================= */
 
 .landscape {
   position: relative;
   height: 120vh;
   height: 120svh;
   overflow: hidden;
+  background: var(--bg);
+}
+
+/* The one allowed gradient: the atmosphere itself, driven by theme vars. */
+.landscape::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 38% 0;
   background: linear-gradient(var(--sky1), var(--sky2));
 }
 
 .landscape__stars {
   position: absolute;
-  inset: 0;
+  inset: 0 0 38% 0;
   opacity: var(--stars-opacity);
   pointer-events: none;
 }
@@ -116,8 +193,14 @@ body {
   );
 }
 
-.landscape__orb--sun { background: var(--sun); box-shadow: 0 0 60px 10px var(--sun); }
-.landscape__orb--moon { background: var(--moon); box-shadow: 0 0 30px 4px rgba(255, 255, 255, 0.35); }
+.landscape__orb--sun {
+  background: var(--sun);
+  box-shadow: 0 0 60px 10px var(--sun);
+}
+.landscape__orb--moon {
+  background: var(--moon);
+  box-shadow: 0 0 30px 4px rgba(255, 255, 255, 0.35);
+}
 
 .landscape__svg {
   position: absolute;
@@ -137,21 +220,47 @@ body {
   height: 120svh;
 }
 
-.landscape__svg svg text { user-select: none; }
+.landscape__svg svg text {
+  user-select: none;
+}
 
-#layer11 { display: none; }
+#layer11 {
+  display: none;
+}
 
-#layer10 :is(rect, circle, path, polygon, ellipse) { fill: var(--l10) !important; }
-#layer9 :is(rect, circle, path, polygon, ellipse) { fill: var(--l9) !important; }
-#layer8 :is(rect, circle, path, polygon, ellipse) { fill: var(--l8) !important; }
-#layer7 :is(rect, circle, path, polygon, ellipse) { fill: var(--l7) !important; }
-#layer6 :is(rect, circle, path, polygon, ellipse) { fill: var(--l6) !important; }
-#layer5 :is(rect, circle, path, polygon, ellipse) { fill: var(--l5) !important; }
-#layer4 :is(rect, circle, path, polygon, ellipse) { fill: var(--l4) !important; }
-#layer3 :is(rect, circle, path, polygon, ellipse) { fill: var(--l3) !important; }
-#layer2 :is(rect, circle, path, polygon, ellipse) { fill: var(--l2) !important; }
-#layer1 :is(rect, circle, path, polygon, ellipse) { fill: var(--l1) !important; }
+/* Each skyline layer takes the colour of its hero variable. */
+#layer10 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l10) !important;
+}
+#layer9 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l9) !important;
+}
+#layer8 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l8) !important;
+}
+#layer7 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l7) !important;
+}
+#layer6 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l6) !important;
+}
+#layer5 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l5) !important;
+}
+#layer4 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l4) !important;
+}
+#layer3 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l3) !important;
+}
+#layer2 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l2) !important;
+}
+#layer1 :is(rect, circle, path, polygon, ellipse) {
+  fill: var(--l1) !important;
+}
 
+/* Window lights: white by day, warm yellow at night. */
 g[id$="-lights"] {
   opacity: 1;
 }
@@ -164,13 +273,570 @@ g[id$="-lights"] :is(rect, circle, path, polygon, ellipse).on {
   fill: var(--lights-on) !important;
 }
 
-.content {
-  max-width: 60ch;
-  padding: 2rem 1rem 4rem;
-  margin: 0 auto;
-  color: #cfd4e0;
+/* ================= Buttons ================= */
+
+.btn {
+  display: inline-block;
+  padding: 0.85rem 1.9rem;
+  clip-path: var(--cut);
+  font-family: var(--font-d);
+  font-weight: 800;
+  font-size: 0.95rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--l1);
+  border-color: var(--accent);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.45);
+}
+.btn--primary:hover {
+  background: var(--accent-warm);
+  border-color: var(--accent-warm);
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.55);
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+  clip-path: var(--cut-alt);
+}
+.btn--ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.release-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0;
+}
+
+/* ================= Dividers: slices of hero layer 1 ================= */
+/* Each strip is a seamless transition: the band behind it (--div-bg)
+   matches one side, the buildings (--div-fill) merge into the other, so
+   no new colours enter the page. .divider--flip mirrors the crop
+   horizontally only. Flat fills only. */
+
+.divider__defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.divider {
+  width: 100%;
+  height: clamp(160px, 26vw, 308px);
+  overflow: hidden;
+  background: var(--div-bg, transparent);
+}
+
+/* Each divider steps one layer further, the last one closes the loop. */
+.divider--1 {
+  --div-bg: var(--l1);
+  --div-fill: var(--l2);
+}
+.divider--2 {
+  --div-bg: var(--l2);
+  --div-fill: var(--l3);
+}
+.divider--3 {
+  --div-bg: var(--l3);
+  --div-fill: var(--l4);
+}
+.divider--4 {
+  --div-bg: var(--l4);
+  --div-fill: var(--l5);
+}
+.divider--5 {
+  --div-bg: var(--l5);
+  --div-fill: var(--l1);
+}
+
+.divider__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: var(--div-fill, var(--l2));
+}
+
+.divider--flip .divider__svg {
+  transform: scaleX(-1);
+}
+
+/* ================= Page body: one continuous city ================= */
+
+.section {
+  --sec: var(--bg);
+  background: var(--sec);
+  padding: 4.5rem 0;
+  scroll-margin-top: 1rem;
+}
+
+/* Full-bleed band, centred column: the section carries the background
+   edge to edge while its children keep the 72rem measure. */
+.section > * {
+  max-width: 72rem;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
+}
+
+/* One band per section, stepping out through the hero layers. Panels
+   step with their band, so cards always sit lighter than home. */
+#forge {
+  --sec: var(--l1);
+  --panel-s: var(--l2);
+  --deep-s: var(--l3);
+}
+#showcase {
+  --sec: var(--l2);
+  --panel-s: var(--l3);
+  --deep-s: var(--l4);
+}
+#daemons {
+  --sec: var(--l3);
+  --panel-s: var(--l4);
+  --deep-s: var(--l5);
+}
+#transmissions {
+  --sec: var(--l4);
+  --panel-s: var(--l5);
+  --deep-s: var(--l6);
+}
+#join {
+  --sec: var(--l5);
+}
+
+.h2 {
+  margin: 0 0 1rem;
+  font-family: var(--font-d);
+  font-weight: 800;
+  font-stretch: condensed;
+  text-transform: uppercase;
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+  font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+}
+
+.h2::after {
+  content: "";
+  display: block;
+  width: 4.5rem;
+  height: 5px;
+  margin-top: 1rem;
+  background: var(--accent);
+  clip-path: var(--slash);
+}
+
+.lede {
+  max-width: 62ch;
+  margin: 0 0 2.5rem;
+  color: var(--muted);
+  font-size: 1.02rem;
+  line-height: 1.6;
+}
+
+/* ================= Cards ================= */
+/* Every section speaks its own shape: notched slabs, railed panels,
+   slanted frames, tab headers, horizontal highlight rows. One accent,
+   hairlines, flat fills only. */
+
+.cards3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+
+.card {
+  position: relative;
+  background: var(--panel-s, var(--panel));
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  padding: 1.6rem 1.5rem 1.5rem;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+}
+
+/* Card copy — shared by cards and highlight rows. */
+.card h3,
+.hl__body h3 {
+  margin: 0 0 0.6rem;
+  font-family: var(--font-d);
+  font-weight: 800;
+  font-size: 1.35rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.card p,
+.hl__body p {
+  margin: 0 0 0.8rem;
+  color: var(--muted);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.card p:last-child,
+.hl__body p:last-child {
+  margin-bottom: 0;
+}
+
+/* Small mono labels above card copy. */
+.card .card__index,
+.card .card__kicker {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-m);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+}
+
+.card .card__index {
+  font-size: 0.78rem;
+}
+
+.card .card__kicker {
+  margin-bottom: 0.4rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* — Forge: three one-off slabs. Notched / railed / slanted. — */
+.card--notch {
+  clip-path: polygon(24px 0, 100% 0, 100% calc(100% - 24px), calc(100% - 24px) 100%, 0 100%, 0 24px);
+  padding-left: 1.75rem;
+  padding-right: 1.75rem;
+}
+
+.card--rail {
+  border-top: 1px solid var(--line);
+  border-left: 8px solid var(--accent);
+  box-shadow: 7px 7px 0 rgba(0, 0, 0, 0.4);
+}
+
+.card--rail:hover {
+  box-shadow: 10px 10px 0 rgba(0, 0, 0, 0.45);
+}
+
+.card--rail .card__index {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--l1);
+  padding: 0.2rem 0.8rem 0.2rem 0.5rem;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
+}
+
+.card--slant {
+  clip-path: polygon(22px 0, 100% 0, calc(100% - 22px) 100%, 0 100%);
+  padding-left: 2.4rem;
+  padding-right: 2.4rem;
+}
+
+/* — Screenshot cards: the shot bleeds to the card edge. — */
+.card--shot {
+  padding-top: 0;
+  overflow: hidden;
+}
+
+/* — Showcase: diagonal-cut vs floating-frame wells. — */
+.card--bevel .shot {
+  border-bottom: 0;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 26px), 0 100%);
+}
+
+.card--bevel.card--flip .shot {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 calc(100% - 26px));
+}
+
+.card--frame .shot {
+  border: 0;
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+
+/* — Transmissions: tab headers punching above sharp slabs. — */
+#transmissions .cards3 {
+  gap: 1.5rem;
+}
+
+.card--tab {
+  overflow: visible;
+  margin-top: 1.2rem;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.4);
+}
+
+.card--tab:hover {
+  box-shadow: 9px 9px 0 rgba(0, 0, 0, 0.45);
+}
+
+.card__tab {
+  display: inline-block;
+  margin: -2.6rem 0 1.1rem;
+  padding: 0.35rem 1.1rem 0.35rem 0.8rem;
+  background: var(--accent);
+  color: var(--l1);
+  font-family: var(--font-m);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+}
+
+/* — Showcase: hover-to-expand gallery. The hovered card blows past its
+   slot, overlaps its neighbours and spills past the row's edges;
+   shapes and finishes stay as-is. — */
+#showcase {
+  overflow: clip;
+}
+#showcase .h2 {
+  margin-bottom: 2.5rem;
+}
+
+#showcase .cards3 {
+  display: flex;
+  align-items: stretch;
+  height: 27rem;
+}
+
+#showcase .card {
+  flex: 1 1 0;
+  min-width: 0;
+  z-index: 1;
+  box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.45);
+  transition: transform 0.08s ease-out, border-color 0.08s ease-out, box-shadow 0.08s ease-out, flex-grow 0.08s ease-out, margin 0.08s ease-out;
+}
+
+#showcase .card:hover {
+  flex-grow: 5;
+  margin-inline: -2.5rem;
+  transform: translateY(-3px) scale(1.08);
+  box-shadow: 11px 11px 0 rgba(0, 0, 0, 0.5);
+  z-index: 3;
+}
+
+/* Squeezed siblings keep the stage height; excess text fades instead
+   of stretching the row and shoving the page below. */
+#showcase .cards3:hover .card:not(:hover) {
+  -webkit-mask-image: linear-gradient(#000 72%, transparent 98%);
+  mask-image: linear-gradient(#000 72%, transparent 98%);
+}
+
+/* Expanded card swings horizontal: 4:3 well left, copy right.
+   Desktop hover only — rest state and mobile stay image-over-text. */
+#showcase .card__body {
+  min-width: 0;
+}
+#showcase .card__body > :last-child {
+  margin-bottom: 0;
+}
+
+@media (min-width: 861px) {
+  #showcase .card:hover {
+    display: grid;
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: 1.5rem;
+    align-items: center;
+    padding: 1.25rem 1.5rem;
+  }
+
+  #showcase .card:hover .shot {
+    aspect-ratio: 4 / 3;
+    width: 100%;
+    margin: 0;
+  }
+}
+
+/* ================= Highlight rows (menu bar) ================= */
+/* Rows alternate direction; thumbs each cut a different way. */
+
+.hl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas: "shot body";
+  gap: 2rem;
+  align-items: center;
+  background: var(--panel-s, var(--panel));
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--accent);
+  padding: 1.5rem 1.75rem;
+  width: min(72rem, calc(100% - 2.5rem));
+  margin: 0 auto 1.25rem;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.hl:last-child {
+  margin-bottom: 0;
+}
+
+.hl:hover {
+  border-color: var(--accent);
+  transform: translateX(5px);
+}
+
+.hl--flip {
+  grid-template-areas: "body shot";
+  border-left: 1px solid var(--line);
+  border-right: 6px solid var(--accent);
+}
+
+.hl--flip:hover {
+  transform: translateX(-5px);
+}
+
+.hl__thumb {
+  grid-area: shot;
+  margin: 0;
+  align-self: center;
+  border: 1px solid var(--line);
+}
+
+.hl__thumb--edge {
+  border-left: 6px solid var(--accent);
+}
+.hl__thumb--notch {
+  border: 0;
+  clip-path: polygon(16px 0, 100% 0, 100% 100%, 0 100%, 0 16px);
+}
+.hl__thumb--frame {
+  outline: 3px solid var(--accent);
+  outline-offset: 5px;
+}
+
+.hl__body {
+  grid-area: body;
+}
+
+.hl__body .mono {
+  font-family: var(--font-m);
+  font-size: 1.1rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ================= Screenshot slots ================= */
+/* 16:9 frames. Drop an <img> inside .shot to go live; until then
+   .shot__ph holds the space as a quiet dashed frame. */
+
+.shot {
+  margin: 0 -1.5rem 1.25rem;
+  padding: 0;
+  background: var(--deep-s, var(--panel-deep));
+  border-bottom: 1px solid var(--line);
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  position: relative;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.shot__ph {
+  position: absolute;
+  inset: 0;
+  border: 1px dashed var(--faint);
+  margin: 0.9rem;
+}
+
+/* Corner ticks on the placeholder frame — flat accents, no gradients. */
+.shot__ph::before,
+.shot__ph::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--accent);
+}
+
+.shot__ph::before {
+  top: -2px;
+  left: -2px;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+.shot__ph::after {
+  bottom: -2px;
+  right: -2px;
+  border-left: 0;
+  border-top: 0;
+}
+
+/* ================= Responsive ================= */
+
+@media (max-width: 1100px) {
+  #showcase .cards3 {
+    height: 29rem;
+  }
+}
+
+@media (max-width: 860px) {
+  .cards3 {
+    grid-template-columns: 1fr;
+  }
+
+  #showcase .cards3 {
+    flex-direction: column;
+    height: auto;
+  }
+  #showcase .card {
+    flex: none;
+  }
+  #showcase .card:hover {
+    flex-grow: 0;
+    margin-inline: 0;
+    transform: translateY(-3px);
+  }
+  #showcase .cards3:hover .card:not(:hover) {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  .hl,
+  .hl--flip {
+    grid-template-columns: 1fr;
+    grid-template-areas: "shot" "body";
+    border-right: 1px solid var(--line);
+  }
+
+  .hl--flip:hover {
+    transform: translateX(5px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .landscape__svg svg g { transform: none !important; }
+  html {
+    scroll-behavior: auto;
+  }
+
+  .landscape__svg svg g {
+    transform: none !important;
+  }
+
+  .card:hover {
+    transform: none;
+  }
+  #showcase .card:hover {
+    flex-grow: 1;
+    margin-inline: 0;
+  }
 }

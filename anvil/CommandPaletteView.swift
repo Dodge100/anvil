@@ -263,7 +263,7 @@ private struct CommandPaletteEditorPane: View {
                     }
                     .buttonStyle(.plain)
                     .popover(isPresented: $showIconPicker) {
-                        IconPickerGrid(icon: binding.icon)
+                        SymbolPickerView(symbols: MenuBarItem.availableIcons, icon: binding.icon)
                     }
 
                     TextField("Name", text: binding.name)
@@ -356,11 +356,12 @@ private struct CommandPaletteEditorPane: View {
                         .frame(width: 100, alignment: .trailing)
 
                     KeyComboCaptureField(
-                        modifiers: palette.hotkey.mandatoryModifiers,
-                        key: palette.hotkey.key,
-                        isCapturing: store.isCapturingCommandPaletteHotkey,
+                        isRecording: store.isCapturingCommandPaletteHotkey,
+                        displayLabel: palette.hasHotkey
+                            ? KeyShortcut(mandatoryModifiers: palette.hotkey.mandatoryModifiers, key: palette.hotkey.key).displayLabel
+                            : "",
                         onStart: { store.startCommandPaletteHotkeyCapture(for: palette.id) },
-                        onCancel: { store.stopCommandPaletteHotkeyCapture() }
+                        onStop: { store.stopCommandPaletteHotkeyCapture() }
                     )
 
                     if palette.hasHotkey {

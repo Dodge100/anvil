@@ -33,10 +33,11 @@ final class KeyboardRemapEngine {
 
     private var sequenceProgress: [String: SequenceProgress] = [:]
 
-    /// A trigger group bundles one trigger with its own conditions.
+    /// A trigger group bundles one trigger with the scope it fires under.
+    /// Branches opt in to a scope via `ConditionBranch.triggerScope`.
     struct TriggerGroup {
         let trigger: ManipulatorTrigger
-        let conditions: [Condition]
+        let scope: BranchTriggerScope
         let groupIndex: Int
     }
 
@@ -140,7 +141,10 @@ final class KeyboardRemapEngine {
             return old.isEnabled != new.isEnabled
                 || old.manipulatorType != new.manipulatorType
                 || old.trigger != new.trigger
-                || old.conditions != new.conditions
+                || old.rootBlock?.id != new.rootBlock?.id
+                || old.branchActionCount != new.branchActionCount
+                || old.branchConditionCount != new.branchConditionCount
+                || old.branchStructureHash != new.branchStructureHash
                 || old.actions != new.actions
                 || old.parameters != new.parameters
                 || old.additionalTriggers != new.additionalTriggers
@@ -166,7 +170,7 @@ final class KeyboardRemapEngine {
                 all.append(route)
 
                 if manipulator.manipulatorType == .basic,
-                   eventGroups.contains(where: { $0.trigger.keyType != .pointing }) {
+                   eventGroups.contains(where: { $0.trigger.keyType != .pointing && $0.trigger.keyType != .consumer }) {
                     keyboard.append(route)
                 }
                 if manipulator.manipulatorType == .mouseBasic
@@ -206,9 +210,9 @@ final class KeyboardRemapEngine {
         static func triggerGroups(for manipulator: Manipulator) -> [TriggerGroup] {
             var groups: [TriggerGroup] = []
             groups.reserveCapacity(1 + manipulator.additionalTriggers.count)
-            groups.append(TriggerGroup(trigger: manipulator.trigger, conditions: manipulator.conditions, groupIndex: 0))
+            groups.append(TriggerGroup(trigger: manipulator.trigger, scope: .main, groupIndex: 0))
             for (idx, additional) in manipulator.additionalTriggers.enumerated() {
-                groups.append(TriggerGroup(trigger: additional.trigger, conditions: additional.conditions, groupIndex: idx + 1))
+                groups.append(TriggerGroup(trigger: additional.trigger, scope: .additional(id: additional.id), groupIndex: idx + 1))
             }
             return groups
         }
@@ -278,12 +282,15 @@ final class KeyboardRemapEngine {
 
 
     // Active press tracking for held-down / to-if-alone / delayed-action semantics.
+    // The branch is resolved once at key-down time so the whole press sticks
+    // to one if/elif/else branch even if conditions change mid-press.
     private struct ActivePress {
         let manipulator: Manipulator
         let keyID: String
         let keyType: TriggerKeyType
         let downTime: Date
         let proxy: CGEventTapProxy?
+        let resolvedActions: [Action]
     }
     private var activePresses: [UUID: ActivePress] = [:]
     private var pressTimers: [UUID: [ActionFireMode: Task<Void, Never>]] = [:]
@@ -348,9 +355,26 @@ final class KeyboardRemapEngine {
     private var windowPropertyCacheTime: Date = .distantPast
     private let windowPropertyCacheTTL: TimeInterval = 1.0
 
+    /// Compiled-regex cache for `.matches` conditions: pattern → regex.
+    /// `range(of:options:.regularExpression)` recompiles on every event;
+    /// caching avoids that hot-path cost.
+    private static var regexCache: [String: NSRegularExpression] = [:]
+    private static let regexCacheLock = NSLock()
+
     /// Per-event condition result cache to avoid redundant evaluation across routing passes.
     /// Reset at the start of each handle() call.
     private var eventConditionCache: [UUID: Bool] = [:]
+
+    private static func cachedRegex(for pattern: String) -> NSRegularExpression? {
+        regexCacheLock.lock()
+        defer { regexCacheLock.unlock() }
+        if let cached = regexCache[pattern] { return cached }
+        guard let compiled = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        // Bound cache size to avoid unbounded growth from user patterns.
+        if regexCache.count > 128 { regexCache.removeAll() }
+        regexCache[pattern] = compiled
+        return compiled
+    }
 
     /// Ordered condition evaluation: cheap conditions are checked before expensive ones.
     /// This allows early-exit without hitting AX/ScreenCapture APIs when a cheap condition fails.
@@ -565,9 +589,9 @@ final class KeyboardRemapEngine {
     func triggerNamedTrigger(name: String, proxy: CGEventTapProxy? = nil) -> Bool {
         for manipulator in manipulators where manipulator.isEnabled {
             guard manipulator.trigger.triggerName == name else { continue }
-            guard allConditionsMet(manipulator.conditions) else { continue }
-            for action in manipulator.actions {
-                guard actionConditionsMet(action) else { continue }
+            // A named invocation runs through the main trigger's scope.
+            guard let resolved = resolvedActions(for: manipulator, scope: .main) else { continue }
+            for action in resolved {
                 onExecuteAction?(manipulator, action, proxy)
                 if action.kind == .halt { break }
             }
@@ -687,6 +711,12 @@ final class KeyboardRemapEngine {
                nsEvent.subtype.rawValue == 8 {
                 let nxKeyType = Int32((nsEvent.data1 >> 16) & 0xFFFF)
                 if let consumerKeyID = consumerKeyIDForNXKeyType(nxKeyType) {
+                    // Media keys emit a press *and* a release event. Only the
+                    // press should trigger the manipulator, and the release
+                    // must be passed through so the key doesn't get stuck.
+                    guard isKeyPress(nsEvent.data1) else {
+                        return Unmanaged.passUnretained(event)
+                    }
                     if let result = dispatchConsumerKeyDown(consumerKeyID: consumerKeyID, event: event) {
                         return result
                     }
@@ -724,7 +754,7 @@ final class KeyboardRemapEngine {
             for group in route.triggerGroups {
                 guard let hotKey = group.trigger.hotKey, hotKey.isValid,
                       hotKey.tapCount > 1 || hotKey.holdRequired else { continue }
-                guard allConditionsMet(group.conditions) else { continue }
+                guard manipulatorMayFire(manipulator, scope: group.scope) else { continue }
 
                 let keyMatches: Bool
                 if group.trigger.anyKey {
@@ -736,7 +766,7 @@ final class KeyboardRemapEngine {
                 }
                 guard keyMatches else { continue }
 
-                if handleMultiTap(for: manipulator, keyID: keyID, hotKey: hotKey, flags: augmentedFlags, proxy: proxy, groupIndex: group.groupIndex) {
+                if handleMultiTap(for: manipulator, keyID: keyID, hotKey: hotKey, flags: augmentedFlags, proxy: proxy, groupIndex: group.groupIndex, scope: group.scope) {
                     hotKeySwallowed = true
                     break
                 }
@@ -752,19 +782,21 @@ final class KeyboardRemapEngine {
         for route in routing.keyboard {
             let manipulator = routing[route]
             for group in route.triggerGroups {
-                guard allConditionsMet(group.conditions) else { continue }
+                guard manipulatorMayFire(manipulator, scope: group.scope) else { continue }
                 let trigger = group.trigger
 
                 if trigger.anyKey {
-                    executeFire(for: manipulator, keyID: keyID, keyType: .keyboard, proxy: proxy)
-                    didSwallow = true
-                    break
+                    if executeFire(for: manipulator, scope: group.scope, keyID: keyID, keyType: .keyboard, proxy: proxy) != nil {
+                        didSwallow = true
+                        break
+                    }
+                    continue
                 }
 
                 switch advanceSequenceTrigger(manipulator, trigger: trigger, groupIndex: group.groupIndex, keyID: keyID, flags: augmentedFlags) {
                 case .noMatch:
                     if trigger.simultaneous != nil {
-                        if advanceSimultaneousTrigger(manipulator, trigger: trigger, groupIndex: group.groupIndex, keyID: keyID, flags: augmentedFlags, proxy: proxy) {
+                        if advanceSimultaneousTrigger(manipulator, trigger: trigger, groupIndex: group.groupIndex, scope: group.scope, keyID: keyID, flags: augmentedFlags, proxy: proxy) {
                             didSwallow = true
                             break
                         }
@@ -774,8 +806,10 @@ final class KeyboardRemapEngine {
                     didSwallow = true
                     break
                 case .fired:
-                    executeFire(for: manipulator, keyID: keyID, keyType: .keyboard, proxy: proxy)
-                    if shouldHalt(for: manipulator) { return nil }
+                    guard let resolved = executeFire(for: manipulator, scope: group.scope, keyID: keyID, keyType: .keyboard, proxy: proxy) else {
+                        break
+                    }
+                    if resolved.contains(where: { $0.kind == .halt && $0.fireMode == .onKeyDown }) { return nil }
                     didSwallow = true
                     break
                 }
@@ -800,20 +834,27 @@ final class KeyboardRemapEngine {
         // Cancel any pending multi‑tap holds that are waiting for this key.
         // If the hold timer hasn't fired yet, the user released before the
         // hold threshold — the multi‑tap sequence is silently discarded.
-        for (key, task) in multiTapPendingHolds {
-            let parts = key.split(separator: ":")
-            guard parts.count >= 2, let manipulatorID = UUID(uuidString: String(parts[0])) else { continue }
-            guard let manipulator = manipulators.first(where: { $0.id == manipulatorID }) else { continue }
+        // O(1) lookup via the routing cache (no UUID parsing + linear scan).
+        if !multiTapPendingHolds.isEmpty {
+            for (key, task) in multiTapPendingHolds {
+                guard let colonIndex = key.firstIndex(of: ":") else { continue }
+                let idString = String(key[..<colonIndex])
+                guard let manipulatorID = UUID(uuidString: idString) else { continue }
+                guard let manipulator = routing.manipulatorCache[manipulatorID] else {
+                    task.cancel()
+                    multiTapPendingHolds.removeValue(forKey: key)
+                    continue
+                }
 
-            // Check if this key matches the manipulator's trigger
-            let matchFound = manipulator.trigger.steps.contains { $0.key == keyID }
-                || manipulator.trigger.anyKey
-                || (manipulator.trigger.keyType == .consumer && manipulator.trigger.steps.first?.key == keyID)
-                || (manipulator.trigger.keyType == .pointing && manipulator.trigger.steps.first?.key == keyID)
+                // Check if this key matches the manipulator's trigger
+                let matchFound = manipulator.trigger.steps.contains { $0.key == keyID }
+                    || manipulator.trigger.anyKey
+                    || manipulator.additionalTriggers.contains { $0.trigger.steps.contains { $0.key == keyID } || $0.trigger.anyKey }
 
-            if matchFound {
-                task.cancel()
-                multiTapPendingHolds.removeValue(forKey: key)
+                if matchFound {
+                    task.cancel()
+                    multiTapPendingHolds.removeValue(forKey: key)
+                }
             }
         }
 
@@ -917,6 +958,11 @@ final class KeyboardRemapEngine {
             if nsEvent.type == .flagsChanged {
                 let keyCodeInt = Int(nsEvent.keyCode)
                 if let consumerKeyID = consumerKeyID(forNSEventKeyCode: keyCodeInt) {
+                    // flagsChanged fires on press *and* release for media keys.
+                    // Only act on the press, and let the release through.
+                    guard isKeyPress(nsEvent.data1) else {
+                        return Unmanaged.passUnretained(event)
+                    }
                     if let result = dispatchConsumerKeyDown(consumerKeyID: consumerKeyID, event: event) {
                         return result
                     }
@@ -1011,7 +1057,7 @@ final class KeyboardRemapEngine {
             let manipulator = routing[route]
             for group in route.triggerGroups {
                 guard let stringTrigger = group.trigger.stringTrigger, stringTrigger.isValid else { continue }
-                guard allConditionsMet(group.conditions) else {
+                guard manipulatorMayFire(manipulator, scope: group.scope) else {
                     resetStringBuffer(for: manipulator.id)
                     continue
                 }
@@ -1069,14 +1115,14 @@ final class KeyboardRemapEngine {
                     case .fullMatch:
                         if buffer == target {
                             if clearOnMatch { resetStringBuffer(for: manipulator.id) }
-                            executeStringTriggerFire(for: manipulator, target: target)
+                            executeStringTriggerFire(for: manipulator, target: target, scope: group.scope)
                         } else {
                             resetStringBuffer(for: manipulator.id)
                         }
                     case .prefix:
                         if buffer.count >= target.count {
                             if clearOnMatch { resetStringBuffer(for: manipulator.id) }
-                            executeStringTriggerFire(for: manipulator, target: target)
+                            executeStringTriggerFire(for: manipulator, target: target, scope: group.scope)
                         } else {
                             stringInputBuffer[manipulator.id] = buffer
                             resetStringTriggerTimer(for: manipulator.id, timeout: stringTrigger.timeoutSeconds)
@@ -1084,7 +1130,7 @@ final class KeyboardRemapEngine {
                     case .anyMatch:
                         if buffer.count >= target.count {
                             if clearOnMatch { resetStringBuffer(for: manipulator.id) }
-                            executeStringTriggerFire(for: manipulator, target: target)
+                            executeStringTriggerFire(for: manipulator, target: target, scope: group.scope)
                         } else {
                             stringInputBuffer[manipulator.id] = buffer
                             resetStringTriggerTimer(for: manipulator.id, timeout: stringTrigger.timeoutSeconds)
@@ -1163,9 +1209,9 @@ final class KeyboardRemapEngine {
         return ""
     }
 
-    private func executeStringTriggerFire(for manipulator: Manipulator, target: String) {
+    private func executeStringTriggerFire(for manipulator: Manipulator, target: String, scope: BranchTriggerScope) {
         DispatchQueue.main.async { [weak self] in
-            self?.executeFire(for: manipulator, keyID: "string:\(target)", keyType: .keyboard, proxy: nil)
+            self?.executeFire(for: manipulator, scope: scope, keyID: "string:\(target)", keyType: .keyboard, proxy: nil)
         }
     }
 
@@ -1196,16 +1242,31 @@ final class KeyboardRemapEngine {
 
     // MARK: - Consumer key dispatch
 
+    /// Normalize a configured consumer key ID to its canonical form so
+    /// triggers saved with legacy IDs (short raw values, `vk_consumer_prev`)
+    /// still match incoming media-key events.
+    private func canonicalConsumerKeyID(_ keyID: String) -> String {
+        if let code = ConsumerKeyCode.allCases.first(where: { $0.keyID == keyID }) {
+            return code.keyID
+        }
+        if let code = ConsumerKeyCode.allCases.first(where: { $0.rawValue == keyID }) {
+            return code.keyID
+        }
+        if keyID == "vk_consumer_prev" { return ConsumerKeyCode.previous.keyID }
+        return keyID
+    }
+
     private func dispatchConsumerKeyDown(consumerKeyID: String, event: CGEvent) -> Unmanaged<CGEvent>? {
+        let canonical = canonicalConsumerKeyID(consumerKeyID)
         for route in routing.consumer {
             let manipulator = routing[route]
             guard let group = route.triggerGroups.first(where: { group in
                 group.trigger.keyType == .consumer
-                && group.trigger.steps.first?.key == consumerKeyID
-                && allConditionsMet(group.conditions)
+                && group.trigger.steps.first.map { canonicalConsumerKeyID($0.key) } == canonical
+                && manipulatorMayFire(manipulator, scope: group.scope)
             }) else { continue }
 
-            executeFire(for: manipulator, keyID: consumerKeyID, keyType: group.trigger.keyType)
+            executeFire(for: manipulator, scope: group.scope, keyID: canonical, keyType: group.trigger.keyType)
             return nil
         }
         return Unmanaged.passUnretained(event)
@@ -1220,10 +1281,10 @@ final class KeyboardRemapEngine {
         // Check mouse_basic manipulators
         for route in routing.pointing where routing[route].manipulatorType == .mouseBasic {
             let manipulator = routing[route]
-            if route.triggerGroups.contains(where: { group in
-                allConditionsMet(group.conditions) && group.trigger.steps.first?.key == buttonID
+            if let group = route.triggerGroups.first(where: { group in
+                manipulatorMayFire(manipulator, scope: group.scope) && group.trigger.steps.first?.key == buttonID
             }) {
-                executeFire(for: manipulator, keyID: buttonID, keyType: .pointing)
+                executeFire(for: manipulator, scope: group.scope, keyID: buttonID, keyType: .pointing)
                 return nil
             }
         }
@@ -1231,12 +1292,12 @@ final class KeyboardRemapEngine {
         // Check regular pointing triggers
         for route in routing.pointing {
             let manipulator = routing[route]
-            guard route.triggerGroups.contains(where: { group in
+            guard let group = route.triggerGroups.first(where: { group in
                 group.trigger.keyType == .pointing
                 && group.trigger.steps.first?.key == buttonID
-                && allConditionsMet(group.conditions)
+                && manipulatorMayFire(manipulator, scope: group.scope)
             }) else { continue }
-            executeFire(for: manipulator, keyID: buttonID, keyType: .pointing)
+            executeFire(for: manipulator, scope: group.scope, keyID: buttonID, keyType: .pointing)
             return nil
         }
 
@@ -1257,7 +1318,9 @@ final class KeyboardRemapEngine {
         // Check mouse_motion_to_scroll manipulators
         for route in routing.mouseMotionToScroll {
             let manipulator = routing[route]
-            guard allConditionsMet(manipulator.conditions) else { continue }
+            // Motion events carry no trigger-group scope, so the gate ignores
+            // per-branch trigger scoping and only checks branch conditions.
+            guard mouseMotionMayFire(manipulator) else { continue }
             // This manipulator type swaps the event meaning: mouse movement becomes scroll
             let speed = manipulator.parameters.mouseMotionToScrollSpeed
             let dx = event.getIntegerValueField(.mouseEventDeltaX)
@@ -1279,7 +1342,7 @@ final class KeyboardRemapEngine {
 
     // MARK: - Simultaneous (chord) triggers
 
-    private func advanceSimultaneousTrigger(_ manipulator: Manipulator, trigger: ManipulatorTrigger, groupIndex: Int, keyID: String, flags: CGEventFlags, proxy: CGEventTapProxy?) -> Bool {
+    private func advanceSimultaneousTrigger(_ manipulator: Manipulator, trigger: ManipulatorTrigger, groupIndex: Int, scope: BranchTriggerScope, keyID: String, flags: CGEventFlags, proxy: CGEventTapProxy?) -> Bool {
         guard let simultaneous = trigger.simultaneous, simultaneous.isValid else { return false }
 
         let simKeys = simultaneous.keys
@@ -1321,7 +1384,9 @@ final class KeyboardRemapEngine {
 
             // Fire the manipulator
             simultaneousStates.removeValue(forKey: stateKey)
-            executeFire(for: manipulator, keyID: simKeys.map(\.key).joined(separator: "+"), keyType: .keyboard, proxy: proxy)
+            guard let resolved = executeFire(for: manipulator, scope: scope, keyID: simKeys.map(\.key).joined(separator: "+"), keyType: .keyboard, proxy: proxy) else {
+                return false
+            }
 
             // If there are to_after_key_up actions, schedule them
             if !options.toAfterKeyUp.isEmpty {
@@ -1329,7 +1394,7 @@ final class KeyboardRemapEngine {
                 // For now, execute the after-key-up actions' fire mode
             }
 
-            return !manipulator.actions.contains(where: { $0.kind == .disable })
+            return !resolved.contains(where: { $0.kind == .disable })
         }
 
         // Check timeout
@@ -1370,7 +1435,7 @@ final class KeyboardRemapEngine {
     /// Processes a key‑down event for a manipulator that has a `HotKeyTriggerConfig`.
     /// Returns `true` if the event should be swallowed (either because the multi‑tap
     /// sequence is in‑progress or because it just completed).
-    private func handleMultiTap(for manipulator: Manipulator, keyID: String, hotKey: HotKeyTriggerConfig, flags: CGEventFlags, proxy: CGEventTapProxy?, groupIndex: Int) -> Bool {
+    private func handleMultiTap(for manipulator: Manipulator, keyID: String, hotKey: HotKeyTriggerConfig, flags: CGEventFlags, proxy: CGEventTapProxy?, groupIndex: Int, scope: BranchTriggerScope) -> Bool {
         let now = eventTimestamp
         let tapKey = triggerGroupKey(manipulatorID: manipulator.id, groupIndex: groupIndex)
         var progress = multiTapProgress[tapKey]
@@ -1408,7 +1473,7 @@ final class KeyboardRemapEngine {
                         guard self.multiTapPendingHolds[tapKey] != nil else { return }
                         self.multiTapPendingHolds.removeValue(forKey: tapKey)
                         // Hold threshold satisfied — fire the manipulator
-                        self.executeFire(for: manipulator, keyID: keyID, keyType: manipulator.trigger.keyType, proxy: proxy, tapCount: hotKey.tapCount)
+                        self.executeFire(for: manipulator, scope: scope, keyID: keyID, keyType: manipulator.trigger.keyType, proxy: proxy, tapCount: hotKey.tapCount)
                     }
                 }
                 multiTapPendingHolds[tapKey] = holdTask
@@ -1419,7 +1484,7 @@ final class KeyboardRemapEngine {
                     multiTapProgress.removeValue(forKey: tapKey)
                 }
                 progress!.timerTask?.cancel()
-                executeFire(for: manipulator, keyID: keyID, keyType: manipulator.trigger.keyType, proxy: proxy, tapCount: hotKey.tapCount)
+                executeFire(for: manipulator, scope: scope, keyID: keyID, keyType: manipulator.trigger.keyType, proxy: proxy, tapCount: hotKey.tapCount)
                 return true
             }
         } else {
@@ -1445,31 +1510,37 @@ final class KeyboardRemapEngine {
         case interrupted
     }
 
-    private func executeFire(for manipulator: Manipulator, keyID: String, keyType: TriggerKeyType, proxy: CGEventTapProxy? = nil, tapCount: Int? = nil) {
-        for action in manipulator.actions where action.fireMode == .onKeyDown {
-            guard actionConditionsMet(action) else { continue }
+    /// Fire a manipulator for a trigger group that just matched.
+    /// Resolves the if/elif/else chain (first match wins) and runs the winning
+    /// branch's on-key-down actions. Returns the resolved actions, or `nil`
+    /// when no branch matched and no else exists (caller must pass through).
+    @discardableResult
+    private func executeFire(for manipulator: Manipulator, scope: BranchTriggerScope, keyID: String, keyType: TriggerKeyType, proxy: CGEventTapProxy? = nil, tapCount: Int? = nil) -> [Action]? {
+        guard let resolved = resolvedActions(for: manipulator, scope: scope) else { return nil }
+        for action in resolved where action.fireMode == .onKeyDown {
             if let tapCount, action.tapCount != tapCount { continue }
             onExecuteAction?(manipulator, action, proxy)
             if action.kind == .halt { break }
         }
 
-        let hasDeferred = manipulator.actions.contains { $0.fireMode != .onKeyDown }
-        guard hasDeferred else { return }
+        let hasDeferred = resolved.contains { $0.fireMode != .onKeyDown }
+        guard hasDeferred else { return resolved }
 
-        guard manipulator.trigger.steps.count <= 1 || manipulator.trigger.simultaneous != nil else { return }
+        guard manipulator.trigger.steps.count <= 1 || manipulator.trigger.simultaneous != nil else { return resolved }
 
-        let press = ActivePress(manipulator: manipulator, keyID: keyID, keyType: keyType, downTime: eventTimestamp, proxy: proxy)
+        let press = ActivePress(manipulator: manipulator, keyID: keyID, keyType: keyType, downTime: eventTimestamp, proxy: proxy, resolvedActions: resolved)
         activePresses[manipulator.id] = press
-        scheduleTimers(for: manipulator)
+        scheduleTimers(for: manipulator, actions: resolved)
+        return resolved
     }
 
-    private func scheduleTimers(for manipulator: Manipulator) {
+    private func scheduleTimers(for manipulator: Manipulator, actions: [Action]) {
         let id = manipulator.id
         let params = manipulator.parameters
         var timers: [ActionFireMode: Task<Void, Never>] = [:]
 
-        if manipulator.actions.contains(where: { $0.fireMode == .ifAlone })
-            || manipulator.actions.contains(where: { $0.fireMode == .ifHeldDown }) {
+        if actions.contains(where: { $0.fireMode == .ifAlone })
+            || actions.contains(where: { $0.fireMode == .ifHeldDown }) {
             let threshold = max(0, params.toIfHeldDownThresholdMilliseconds)
             timers[.ifHeldDown] = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(threshold) * 1_000_000)
@@ -1478,8 +1549,8 @@ final class KeyboardRemapEngine {
             }
         }
 
-        if manipulator.actions.contains(where: { $0.fireMode == .ifHeldDownInvoked })
-            || manipulator.actions.contains(where: { $0.fireMode == .ifHeldDownCanceled }) {
+        if actions.contains(where: { $0.fireMode == .ifHeldDownInvoked })
+            || actions.contains(where: { $0.fireMode == .ifHeldDownCanceled }) {
             let delay = max(0, params.toDelayActionDelayMilliseconds)
             if delay > 0 {
                 timers[.ifHeldDownInvoked] = Task { [weak self] in
@@ -1498,22 +1569,20 @@ final class KeyboardRemapEngine {
     }
 
     @MainActor private func fireHeldDown(for id: UUID) {
-        guard activePresses[id] != nil else { return }
-        guard let manipulator = manipulators.first(where: { $0.id == id }) else { return }
+        guard let press = activePresses[id] else { return }
+        let manipulator = press.manipulator
         let activeTapCount = manipulator.trigger.hotKey?.tapCount
-        for action in manipulator.actions where action.fireMode == .ifHeldDown {
-            guard actionConditionsMet(action) else { continue }
+        for action in press.resolvedActions where action.fireMode == .ifHeldDown {
             if let activeTapCount, action.tapCount != activeTapCount { continue }
             onExecuteAction?(manipulator, action, nil)
         }
     }
 
     @MainActor private func fireDelayedInvoked(for id: UUID) {
-        guard activePresses[id] != nil else { return }
-        guard let manipulator = manipulators.first(where: { $0.id == id }) else { return }
+        guard let press = activePresses[id] else { return }
+        let manipulator = press.manipulator
         let activeTapCount = manipulator.trigger.hotKey?.tapCount
-        for action in manipulator.actions where action.fireMode == .ifHeldDownInvoked {
-            guard actionConditionsMet(action) else { continue }
+        for action in press.resolvedActions where action.fireMode == .ifHeldDownInvoked {
             if let activeTapCount, action.tapCount != activeTapCount { continue }
             onExecuteAction?(manipulator, action, nil)
         }
@@ -1540,26 +1609,22 @@ final class KeyboardRemapEngine {
 
         switch resolution {
         case .released:
-            for action in manipulator.actions where action.fireMode == .afterKeyUp {
-                guard actionConditionsMet(action) else { continue }
+            for action in press.resolvedActions where action.fireMode == .afterKeyUp {
                 if let activeTapCount, action.tapCount != activeTapCount { continue }
                 onExecuteAction?(manipulator, action, press.proxy)
             }
             if elapsed <= Double(params.toIfAloneTimeoutMilliseconds) {
-                for action in manipulator.actions where action.fireMode == .ifAlone {
-                    guard actionConditionsMet(action) else { continue }
+                for action in press.resolvedActions where action.fireMode == .ifAlone {
                     if let activeTapCount, action.tapCount != activeTapCount { continue }
                     onExecuteAction?(manipulator, action, press.proxy)
                 }
             }
         case .interrupted:
-            for action in manipulator.actions where action.fireMode == .ifHeldDownCanceled {
-                guard actionConditionsMet(action) else { continue }
+            for action in press.resolvedActions where action.fireMode == .ifHeldDownCanceled {
                 if let activeTapCount, action.tapCount != activeTapCount { continue }
                 onExecuteAction?(manipulator, action, nil)
             }
-            for action in manipulator.actions where action.fireMode == .ifOtherKeyPressed {
-                guard actionConditionsMet(action) else { continue }
+            for action in press.resolvedActions where action.fireMode == .ifOtherKeyPressed {
                 if let activeTapCount, action.tapCount != activeTapCount { continue }
                 onExecuteAction?(manipulator, action, nil)
             }
@@ -1592,16 +1657,6 @@ final class KeyboardRemapEngine {
             task.cancel()
         }
         multiTapPendingHolds.removeAll()
-    }
-
-    // MARK: - Action side effects (halt, holdDown, lazy, repeat)
-
-    private func shouldHalt(for manipulator: Manipulator) -> Bool {
-        manipulator.actions.contains { $0.kind == .halt && $0.fireMode == .onKeyDown }
-    }
-
-    private func actionConditionsMet(_ action: Action) -> Bool {
-        action.actionConditions.allSatisfy(conditionMet)
     }
 
     // MARK: - Sequence triggers
@@ -1650,33 +1705,93 @@ final class KeyboardRemapEngine {
         }
     }
 
-    // MARK: - Conditions
+    // MARK: - Conditions (nested if / else blocks)
 
-    /// Evaluate all conditions with short-circuit ordering: cheap → medium → expensive.
-    /// Single-pass: conditions are bucketed by tier and evaluated in priority order.
-    /// Results are cached per event cycle to avoid redundant evaluation across routing passes.
-    private func allConditionsMet(_ conditions: [Condition]) -> Bool {
-        // Partition into three tiers in a single pass
-        var cheap: [Condition] = []
-        var medium: [Condition] = []
-        var expensive: [Condition] = []
-        cheap.reserveCapacity(conditions.count)
-        medium.reserveCapacity(conditions.count)
-        expensive.reserveCapacity(conditions.count)
-        for condition in conditions {
-            if Self.cheapConditionKinds.contains(condition.kind) {
-                cheap.append(condition)
-            } else if Self.mediumConditionKinds.contains(condition.kind) {
-                medium.append(condition)
-            } else {
-                expensive.append(condition)
+    /// Quick gate used before advancing trigger recognition: could this
+    /// manipulator fire for a trigger group with the given scope right now?
+    /// Keeps unmatched keys passing through instead of being swallowed.
+    private func manipulatorMayFire(_ manipulator: Manipulator, scope: BranchTriggerScope) -> Bool {
+        guard let root = manipulator.rootBlock else { return true }
+        // Any action anywhere in the tree keeps the manipulator routable; when
+        // conditions don't match, `resolvedActions` returns nil and the event
+        // passes through as before.
+        return root.containsActions
+    }
+
+    /// Gate for mouse-motion-to-scroll, which carries no trigger-group scope:
+    /// only block conditions are checked, trigger scoping is ignored.
+    private func mouseMotionMayFire(_ manipulator: Manipulator) -> Bool {
+        guard let root = manipulator.rootBlock else { return true }
+        return root.containsActions
+    }
+
+    /// Evaluate the nested if/else block tree for a firing trigger.
+    /// - Returns: the actions to run, or `nil` when nothing matched
+    ///   (the caller must let the event pass through).
+    /// Exposed as internal for palette / preview use.
+    func resolvedActions(for manipulator: Manipulator, scope: BranchTriggerScope) -> [Action]? {
+        guard let root = manipulator.rootBlock else { return manipulator.actions }
+        if blockConditionsMet(root) && root.triggerScope.matches(firing: scope) {
+            var resolved: [Action] = []
+            collectActions(from: root.thenSteps, firing: scope, into: &resolved)
+            return resolved
+        }
+        // Root didn't match: run the else steps only when an else clause exists,
+        // mirroring the old chain (no else → event passes through).
+        guard !root.elseSteps.isEmpty else { return nil }
+        var resolved: [Action] = []
+        collectActions(from: root.elseSteps, firing: scope, into: &resolved)
+        return resolved
+    }
+
+    /// Resolve a step list into concrete actions, running nested blocks
+    /// recursively: matching blocks contribute their `then` steps, failing
+    /// blocks their `else` steps. Blocks whose trigger scope doesn't cover the
+    /// fired trigger are treated as not matched.
+    private func collectActions(from steps: [BranchStep], firing: BranchTriggerScope, into out: inout [Action]) {
+        for step in steps {
+            switch step {
+            case .action(let action):
+                out.append(action)
+            case .block(let nested):
+                if nested.triggerScope.matches(firing: firing) && blockConditionsMet(nested) {
+                    collectActions(from: nested.thenSteps, firing: firing, into: &out)
+                } else {
+                    collectActions(from: nested.elseSteps, firing: firing, into: &out)
+                }
             }
         }
-        // Evaluate tiers in priority order with short-circuit
-        for condition in cheap where !evaluateConditionCached(condition) { return false }
-        for condition in medium where !evaluateConditionCached(condition) { return false }
-        for condition in expensive where !evaluateConditionCached(condition) { return false }
-        return true
+    }
+
+    /// Evaluate one block's condition list (AND vs OR via `matchAll`).
+    /// An empty condition list always matches.
+    private func blockConditionsMet(_ block: BranchBlock) -> Bool {
+        if block.conditions.isEmpty { return true }
+        if block.matchAll {
+            // Partition into three tiers in a single pass, then evaluate
+            // cheap → medium → expensive with short-circuit.
+            var cheap: [Condition] = []
+            var medium: [Condition] = []
+            var expensive: [Condition] = []
+            cheap.reserveCapacity(block.conditions.count)
+            medium.reserveCapacity(block.conditions.count)
+            expensive.reserveCapacity(block.conditions.count)
+            for condition in block.conditions {
+                if Self.cheapConditionKinds.contains(condition.kind) {
+                    cheap.append(condition)
+                } else if Self.mediumConditionKinds.contains(condition.kind) {
+                    medium.append(condition)
+                } else {
+                    expensive.append(condition)
+                }
+            }
+            for condition in cheap where !evaluateConditionCached(condition) { return false }
+            for condition in medium where !evaluateConditionCached(condition) { return false }
+            for condition in expensive where !evaluateConditionCached(condition) { return false }
+            return true
+        } else {
+            return block.conditions.contains(where: evaluateConditionCached)
+        }
     }
 
     /// Evaluate a single condition against current state.
@@ -1739,11 +1854,22 @@ final class KeyboardRemapEngine {
 
     func compare(_ actual: String, _ op: ComparisonOp, _ expected: String) -> Bool {
         switch op {
-        case .isEqual: return actual.lowercased() == expected.lowercased()
-        case .isNotEqual: return actual.lowercased() != expected.lowercased()
-        case .contains: return actual.lowercased().contains(expected.lowercased())
+        case .isEqual:
+            // Fast path: exact match first (no allocation), then case-insensitive.
+            if actual == expected { return true }
+            return actual.caseInsensitiveCompare(expected) == .orderedSame
+        case .isNotEqual:
+            if actual == expected { return false }
+            return actual.caseInsensitiveCompare(expected) != .orderedSame
+        case .contains:
+            if expected.isEmpty { return true }
+            // Fast path avoids lowercased() copies on the hot key-event path.
+            return actual.range(of: expected, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         case .matches:
-            return (actual.range(of: expected, options: [.regularExpression, .caseInsensitive]) != nil)
+            guard !expected.isEmpty else { return false }
+            guard let regex = Self.cachedRegex(for: expected) else { return false }
+            let range = NSRange(actual.startIndex..<actual.endIndex, in: actual)
+            return regex.firstMatch(in: actual, options: [], range: range) != nil
         }
     }
 
@@ -2195,32 +2321,39 @@ final class KeyboardRemapEngine {
         }
     }
 
-    private func consumerKeyID(forNSEventKeyCode keyCode: Int) -> String? {
-        switch keyCode {
-        case 0: return "vk_consumer_volume_up"
-        case 1: return "vk_consumer_volume_down"
-        case 7: return "vk_consumer_mute"
-        case 2: return "vk_consumer_brightness_up"
-        case 3: return "vk_consumer_brightness_down"
-        default: return nil
-        }
+    /// Media key events (system-defined) carry the key state in byte 1 of
+    /// `data1` (0x0A = press, 0x0B = release) on macOS. Some sources place it
+    /// in byte 0 instead, so accept either layout — treating a release as a
+    /// press would fire every manipulator twice and swallow the key-up.
+    private func isKeyPress(_ data1: Int) -> Bool {
+        let low = data1 & 0xFF
+        let mid = (data1 >> 8) & 0xFF
+        if mid == 0x0A { return true }
+        if low == 0x0A { return true }
+        return false
     }
 
-    /// Map an NX_KEYTYPE value (extracted from a system-defined event's data1) to a consumer key ID.
+    /// Map a flagsChanged key code (an NX_KEYTYPE value) to a consumer key ID.
+    private func consumerKeyID(forNSEventKeyCode keyCode: Int) -> String? {
+        consumerKeyIDForNXKeyType(Int32(keyCode))
+    }
+
+    /// Map an NX_KEYTYPE value (from a system-defined event) to a consumer key ID.
+    /// Returns the canonical `vk_consumer_*` ID used by the trigger system.
     private func consumerKeyIDForNXKeyType(_ nxKeyType: Int32) -> String? {
         switch nxKeyType {
-        case NX_KEYTYPE_SOUND_UP: return "vk_consumer_volume_up"
-        case NX_KEYTYPE_SOUND_DOWN: return "vk_consumer_volume_down"
-        case NX_KEYTYPE_MUTE: return "vk_consumer_mute"
-        case NX_KEYTYPE_BRIGHTNESS_UP: return "vk_consumer_brightness_up"
-        case NX_KEYTYPE_BRIGHTNESS_DOWN: return "vk_consumer_brightness_down"
-        case NX_KEYTYPE_PLAY: return "vk_consumer_play"
-        case NX_KEYTYPE_NEXT: return "vk_consumer_next"
-        case NX_KEYTYPE_PREVIOUS: return "vk_consumer_prev"
-        case NX_KEYTYPE_REWIND: return "vk_consumer_rewind"
-        case NX_KEYTYPE_FF: return "vk_consumer_fast_forward"
-        case NX_KEYTYPE_EJECT: return "vk_consumer_eject"
-        case NX_KEYTYPE_POWER: return "vk_consumer_power"
+        case NX_KEYTYPE_SOUND_UP: return ConsumerKeyCode.volumeUp.keyID
+        case NX_KEYTYPE_SOUND_DOWN: return ConsumerKeyCode.volumeDown.keyID
+        case NX_KEYTYPE_MUTE: return ConsumerKeyCode.mute.keyID
+        case NX_KEYTYPE_BRIGHTNESS_UP: return ConsumerKeyCode.brightnessUp.keyID
+        case NX_KEYTYPE_BRIGHTNESS_DOWN: return ConsumerKeyCode.brightnessDown.keyID
+        case NX_KEYTYPE_PLAY: return ConsumerKeyCode.play.keyID
+        case NX_KEYTYPE_NEXT: return ConsumerKeyCode.next.keyID
+        case NX_KEYTYPE_PREVIOUS: return ConsumerKeyCode.previous.keyID
+        case NX_KEYTYPE_REWIND: return ConsumerKeyCode.rewind.keyID
+        case NX_KEYTYPE_FF: return ConsumerKeyCode.fastForward.keyID
+        case NX_KEYTYPE_EJECT: return ConsumerKeyCode.eject.keyID
+        case NX_KEYTYPE_POWER: return ConsumerKeyCode.power.keyID
         default: return nil
         }
     }

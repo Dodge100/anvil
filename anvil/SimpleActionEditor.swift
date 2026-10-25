@@ -14,6 +14,10 @@ struct SimpleActionParametersEditor: View {
         switch $action.wrappedValue.kind {
         case .none:
             EmptyView()
+        case .showMenu:
+            // Show Menu is a click behavior with no parameters; its sub-items
+            // are edited by the call site.
+            EmptyView()
         case .runShortcut:
             TextField("Shortcut name", text: $action.shortcutName, prompt: Text("e.g. Open Browser"))
                 .textFieldStyle(.roundedBorder)

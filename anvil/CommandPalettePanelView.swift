@@ -91,7 +91,7 @@ struct PaletteSearchField: NSViewRepresentable {
 /// Short verb describing an action, shown as the "run" hint like Spotlight does.
 private func actionVerb(for kind: MenuBarActionKind) -> String? {
     switch kind {
-    case .none: return nil
+    case .none, .showMenu: return nil
     case .runShortcut, .runShell, .runAppleScript, .runManipulator: return "Run"
     case .openApp, .openURL, .openFile: return "Open"
     case .sendKey: return "Press"

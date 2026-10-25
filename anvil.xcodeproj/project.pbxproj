@@ -461,7 +461,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.dodge1.anvil</string>
+				<string>com.dodge1.anvil.menubar</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>REGISTER_APP_GROUPS</key>
@@ -518,7 +518,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.dodge1.anvil</string>
+				<string>com.dodge1.anvil.menubar</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>REGISTER_APP_GROUPS</key>

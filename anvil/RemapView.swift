@@ -2,10 +2,16 @@ import SwiftUI
 
 struct RemapView: View {
     @ObservedObject var store: RemapStore
+    @State private var activeOnly = false
+    @State private var groupByFolder = false
+
+    private var isFiltering: Bool {
+        activeOnly || !store.selectedTags.isEmpty
+    }
 
     var body: some View {
         NavigationSplitView {
-            ManipulatorSidebar(store: store)
+            ManipulatorSidebar(store: store, activeOnly: $activeOnly, groupByFolder: $groupByFolder)
                 .navigationTitle("Manipulators")
         } detail: {
             ManipulatorEditorPane(store: store)
@@ -19,6 +25,28 @@ struct RemapView: View {
                     Image(systemName: "plus")
                 }
                 .help("Add a new manipulator (⌘N)")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Toggle("Enabled Only", isOn: $activeOnly)
+                    Toggle("Group by Folder", isOn: $groupByFolder)
+                    if !store.allTags.isEmpty {
+                        Divider()
+                        Section("Tags") {
+                            ForEach(store.allTags, id: \.self) { tag in
+                                Toggle(tag, isOn: Binding(
+                                    get: { store.selectedTags.contains(tag) },
+                                    set: { _ in
+                                        store.toggleTag(tag)
+                                    }
+                                ))
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: isFiltering ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                }
+                .menuIndicator(.hidden)
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
@@ -46,9 +74,8 @@ struct RemapView: View {
 
 private struct ManipulatorSidebar: View {
     @ObservedObject var store: RemapStore
-    @State private var showFilterPopover = false
-    @State private var groupByFolder = false
-    @State private var activeOnly = false
+    @Binding var activeOnly: Bool
+    @Binding var groupByFolder: Bool
     @State private var folderExpanded: [String: Bool] = [:]
 
     private var displayedManipulators: [Manipulator] {
@@ -60,71 +87,46 @@ private struct ManipulatorSidebar: View {
         return base
     }
 
+    /// Folder groups computed once per body evaluation (not per row).
+    private var folderGroups: [(folder: String, items: [Manipulator])] {
+        let groups = Dictionary(grouping: displayedManipulators) {
+            $0.folder.isEmpty ? "Uncategorized" : $0.folder
+        }
+        return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            searchField
             manipulatorList
                 .frame(maxHeight: .infinity)
-            permissionBanner
+            if store.remapNeedsPermission {
+                permissionBanner
+            }
         }
         .frame(minWidth: 280, maxWidth: 380)
+        .searchable(text: $store.searchText, placement: .sidebar, prompt: "Search")
     }
 
     @ViewBuilder
     private var permissionBanner: some View {
-        if store.remapNeedsPermission {
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Accessibility Required", systemImage: "exclamationmark.shield.fill")
-                    .font(.subheadline.weight(.medium))
-                HStack(spacing: 8) {
-                    Button("Grant") {
-                        store.requestRemapPermissions()
-                    }
-                    .controlSize(.small)
-                    Button("Settings") {
-                        store.openAccessibilitySettings()
-                    }
-                    .controlSize(.small)
-                }
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(store.remapIsActive ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
-                Text(store.remapStatusText)
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Accessibility Required")
+                    .font(.footnote.weight(.medium))
+                Text("Enable access to remap keys.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-        }
-    }
-
-    private var searchField: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.tertiary)
-            TextField("Search", text: $store.searchText)
-                .textFieldStyle(.plain)
-            if !store.searchText.isEmpty {
-                Button {
-                    store.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.borderless)
+            Spacer()
+            Button("Open Settings") {
+                store.openAccessibilitySettings()
             }
+            .controlSize(.small)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(8)
     }
-
-
 
     @ViewBuilder
     private var manipulatorList: some View {
@@ -149,15 +151,12 @@ private struct ManipulatorSidebar: View {
             }
             .frame(maxHeight: .infinity)
         } else if groupByFolder {
-            let groups = Dictionary(grouping: displayedManipulators) {
-                $0.folder.isEmpty ? "Uncategorized" : $0.folder
-            }
-            let sortedFolders = groups.keys.sorted()
             List(selection: $store.selectedManipulatorID) {
-                ForEach(sortedFolders, id: \.self) { folder in
+                ForEach(folderGroups, id: \.folder) { folder, items in
                     DisclosureGroup(isExpanded: expandedBinding(for: folder)) {
-                        ForEach(groups[folder] ?? []) { manipulator in
+                        ForEach(items) { manipulator in
                             ManipulatorRow(
+                                store: store,
                                 manipulator: manipulator,
                                 onToggleEnabled: { store.updateManipulator(manipulator.id) { $0.isEnabled.toggle() } },
                                 onDuplicate: { store.duplicateManipulator(manipulator.id) },
@@ -175,10 +174,10 @@ private struct ManipulatorSidebar: View {
             .listStyle(.sidebar)
         } else {
             List(selection: $store.selectedManipulatorID) {
-                ForEach(Array(displayedManipulators.enumerated()), id: \.element.id) { index, manipulator in
+                ForEach(displayedManipulators) { manipulator in
                     ManipulatorRow(
+                        store: store,
                         manipulator: manipulator,
-                        index: index,
                         onToggleEnabled: { store.updateManipulator(manipulator.id) { $0.isEnabled.toggle() } },
                         onDuplicate: { store.duplicateManipulator(manipulator.id) },
                         onExport: { store.exportManipulator(manipulator.id) },
@@ -199,33 +198,66 @@ private struct ManipulatorSidebar: View {
     }
 }
 
-private struct ManipulatorRow: View {
+private struct ManipulatorRow: View, Equatable {
+    @ObservedObject var store: RemapStore
     let manipulator: Manipulator
-    var index: Int = 0
     var onToggleEnabled: () -> Void
     var onDuplicate: () -> Void
     var onExport: () -> Void
     var onDelete: () -> Void
 
+    static func == (lhs: ManipulatorRow, rhs: ManipulatorRow) -> Bool {
+        lhs.manipulator == rhs.manipulator
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
-            Text(manipulator.name.isEmpty ? "Untitled" : manipulator.name)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(manipulator.name.isEmpty ? "Untitled Manipulator" : manipulator.name)
                 .lineLimit(1)
-            Spacer(minLength: 4)
-            if !manipulator.trigger.displayLabel.isEmpty {
-                Text(manipulator.trigger.displayLabel)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            HStack(spacing: 4) {
+                if manipulator.isStarred {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(.yellow)
+                }
+                Text(manipulator.summary)
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
         .opacity(manipulator.isEnabled ? 1 : 0.5)
         .contextMenu {
             Button(manipulator.isEnabled ? "Disable" : "Enable") {
                 onToggleEnabled()
             }
+            Button(manipulator.isStarred ? "Unstar" : "Star") {
+                store.toggleStarred(manipulator.id)
+            }
+            Divider()
             Button("Duplicate") {
                 onDuplicate()
+            }
+            Menu("Move to Folder") {
+                Button("None") {
+                    store.updateManipulatorCosmetic(manipulator.id) { $0.folder = "" }
+                }
+                ForEach(store.allFolders, id: \.self) { folder in
+                    Button(folder) {
+                        store.updateManipulatorCosmetic(manipulator.id) { $0.folder = folder }
+                    }
+                }
+            }
+            if !store.allTags.isEmpty {
+                Menu("Tags") {
+                    ForEach(store.allTags, id: \.self) { tag in
+                        Toggle(tag, isOn: Binding(
+                            get: { manipulator.tags.contains(tag) },
+                            set: { _ in
+                                store.toggleTag(tag, on: manipulator.id)
+                            }
+                        ))
+                    }
+                }
             }
             Divider()
             Button("Export…") {
