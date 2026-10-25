@@ -19,6 +19,7 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
     case setNotification = "Show Notification"
     case openFile = "Open File"
     case runAppleScript = "Run AppleScript"
+    case runManipulator = "Run Manipulator"
 
     var id: String { rawValue }
     var description: String { rawValue }
@@ -38,6 +39,7 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
         case .setNotification: return "bell"
         case .openFile: return "doc"
         case .runAppleScript: return "applescript"
+        case .runManipulator: return "command"
         }
     }
 
@@ -56,6 +58,7 @@ enum MenuBarActionKind: String, CaseIterable, Identifiable, Codable, CustomStrin
         case .setNotification: return "Show a macOS notification"
         case .openFile: return "Open a file or folder"
         case .runAppleScript: return "Run an AppleScript"
+        case .runManipulator: return "Run an Anvil manipulator (macro)"
         }
     }
 }
@@ -80,6 +83,68 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
     var notificationMessage: String = ""
     var filePath: String = ""
     var scriptBody: String = ""
+    /// ID of the manipulator (macro) run by the `runManipulator` kind.
+    var manipulatorID: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, shortcutName, shellCommand, appBundleID, appName, urlString
+        case toKey, toModifiers, variableName, variableValue, notificationMessage
+        case filePath, scriptBody, manipulatorID
+    }
+
+    /// Decodes leniently so files written before a field existed still load.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = container.lenientUUID(forKey: .id)
+        self.kind = container.lenientEnum(forKey: .kind, default: .none)
+        self.shortcutName = try container.decodeIfPresent(String.self, forKey: .shortcutName) ?? ""
+        self.shellCommand = try container.decodeIfPresent(String.self, forKey: .shellCommand) ?? ""
+        self.appBundleID = try container.decodeIfPresent(String.self, forKey: .appBundleID) ?? ""
+        self.appName = try container.decodeIfPresent(String.self, forKey: .appName) ?? ""
+        self.urlString = try container.decodeIfPresent(String.self, forKey: .urlString) ?? ""
+        self.toKey = try container.decodeIfPresent(String.self, forKey: .toKey) ?? ""
+        self.toModifiers = try container.decodeIfPresent(Set<ModifierKey>.self, forKey: .toModifiers) ?? []
+        self.variableName = try container.decodeIfPresent(String.self, forKey: .variableName) ?? ""
+        self.variableValue = try container.decodeIfPresent(String.self, forKey: .variableValue) ?? ""
+        self.notificationMessage = try container.decodeIfPresent(String.self, forKey: .notificationMessage) ?? ""
+        self.filePath = try container.decodeIfPresent(String.self, forKey: .filePath) ?? ""
+        self.scriptBody = try container.decodeIfPresent(String.self, forKey: .scriptBody) ?? ""
+        self.manipulatorID = try container.decodeIfPresent(String.self, forKey: .manipulatorID) ?? ""
+    }
+
+    init(
+        id: UUID = UUID(),
+        kind: MenuBarActionKind = .none,
+        shortcutName: String = "",
+        shellCommand: String = "",
+        appBundleID: String = "",
+        appName: String = "",
+        urlString: String = "",
+        toKey: String = "",
+        toModifiers: Set<ModifierKey> = [],
+        variableName: String = "",
+        variableValue: String = "",
+        notificationMessage: String = "",
+        filePath: String = "",
+        scriptBody: String = "",
+        manipulatorID: String = ""
+    ) {
+        self.id = id
+        self.kind = kind
+        self.shortcutName = shortcutName
+        self.shellCommand = shellCommand
+        self.appBundleID = appBundleID
+        self.appName = appName
+        self.urlString = urlString
+        self.toKey = toKey
+        self.toModifiers = toModifiers
+        self.variableName = variableName
+        self.variableValue = variableValue
+        self.notificationMessage = notificationMessage
+        self.filePath = filePath
+        self.scriptBody = scriptBody
+        self.manipulatorID = manipulatorID
+    }
 
     var summary: String {
         switch kind {
@@ -103,6 +168,7 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
         case .setNotification: return notificationMessage.isEmpty ? "Notify" : "Notify: \(notificationMessage.prefix(40))"
         case .openFile: return filePath.isEmpty ? "Open file" : "\(filePath)"
         case .runAppleScript: return scriptBody.isEmpty ? "Run AppleScript" : "AppleScript"
+        case .runManipulator: return manipulatorID.isEmpty ? "Run manipulator" : "Run macro"
         }
     }
 
@@ -192,6 +258,10 @@ struct MenuBarItemAction: Identifiable, Equatable, Codable {
                     }
                 }
             }
+        case .runManipulator:
+            if !manipulatorID.isEmpty, let id = UUID(uuidString: manipulatorID) {
+                store.runManipulatorByID(id)
+            }
         }
     }
 }
@@ -230,9 +300,12 @@ struct MenuBarItem: Identifiable, Equatable, Codable {
     }
 
     /// Custom decoder so configs saved before `rightChildren` existed still load.
+    /// IDs decode leniently — one corrupt value must never fail a whole
+    /// profile decode (a failed decode makes the store fall back to defaults
+    /// and a later save overwrites the user's real data).
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        id = c.lenientUUID(forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "New Menu Item"
         icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? "star"
         isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true

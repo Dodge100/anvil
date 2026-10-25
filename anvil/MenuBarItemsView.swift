@@ -210,7 +210,8 @@ private struct MenuBarItemEditorPane: View {
                     onDelete: { store.deleteMenuBarItem(id) },
                     onAddChild: { store.addMenuBarChildItem(to: id) },
                     onAddRightChild: { store.addMenuBarRightChildItem(to: id) },
-                    onConvertSeparator: { store.toggleMenuBarItemSeparator(id) }
+                    onConvertSeparator: { store.toggleMenuBarItemSeparator(id) },
+                    manipulators: store.manipulators
                 )
                 .id(id)
             } else {
@@ -240,6 +241,8 @@ private struct MenuBarItemForm: View {
     var onAddChild: () -> Void
     var onAddRightChild: () -> Void
     var onConvertSeparator: () -> Void
+    /// Manipulators offered by the "Run Manipulator" action kind.
+    var manipulators: [Manipulator] = []
 
     @State private var showIconPicker = false
     @State private var showDeleteConfirmation = false
@@ -371,7 +374,7 @@ private struct MenuBarItemForm: View {
             case .none:
                 EmptyView()
             case .showMenu:
-                subItemsEditor(for: children, onAdd: onAddSubItem)
+                subItemsEditor(for: children, onAdd: onAddSubItem, manipulators: manipulators)
             default:
                 actionParameters(action: action)
             }
@@ -515,6 +518,15 @@ private struct MenuBarItemForm: View {
                 .font(.caption.monospaced())
                 .frame(minHeight: 60, maxHeight: 120)
                 .border(.quaternary)
+        case .runManipulator:
+            Picker("Manipulator", selection: action.manipulatorID) {
+                Text("None").tag("")
+                ForEach(manipulators) { manipulator in
+                    Text(manipulator.name.isEmpty ? "Untitled" : manipulator.name)
+                        .tag(manipulator.id.uuidString)
+                }
+            }
+            .labelsHidden()
         }
     }
 }
@@ -524,7 +536,8 @@ private struct MenuBarItemForm: View {
 @ViewBuilder
 private func subItemsEditor(
     for children: Binding<[MenuBarItem]>,
-    onAdd: @escaping () -> Void
+    onAdd: @escaping () -> Void,
+    manipulators: [Manipulator] = []
 ) -> some View {
     VStack(alignment: .leading, spacing: 8) {
         if children.wrappedValue.isEmpty {
@@ -550,7 +563,8 @@ private func subItemsEditor(
                     },
                     onDelete: { id in
                         children.wrappedValue.removeAll { $0.id == id }
-                    }
+                    },
+                    manipulators: manipulators
                 )
             }
         }
@@ -576,6 +590,8 @@ private struct MenuBarChildRow: View {
     var siblingIDsProvider: () -> [UUID] = { [] }
     var onMove: (IndexSet, Int) -> Void = { _, _ in }
     var onDelete: (UUID) -> Void
+    /// Manipulators offered by the "Run Manipulator" action kind.
+    var manipulators: [Manipulator] = []
 
     @State private var showIconPicker = false
     @State private var showActions = false
@@ -688,7 +704,8 @@ private struct MenuBarChildRow: View {
                             },
                             onDelete: { id in
                                 child.children.removeAll { $0.id == id }
-                            }
+                            },
+                            manipulators: manipulators
                         )
                     }
 
@@ -747,7 +764,7 @@ private struct MenuBarChildRow: View {
             .buttonStyle(.plain)
             .help("Edit click actions")
             .popover(isPresented: $showActions, arrowEdge: .trailing) {
-                ChildActionEditor(child: $child)
+                ChildActionEditor(child: $child, manipulators: manipulators)
             }
         } else {
             Button {
@@ -761,7 +778,7 @@ private struct MenuBarChildRow: View {
             .buttonStyle(.plain)
             .help("Configure click actions")
             .popover(isPresented: $showActions, arrowEdge: .trailing) {
-                ChildActionEditor(child: $child)
+                ChildActionEditor(child: $child, manipulators: manipulators)
             }
         }
     }
@@ -852,6 +869,8 @@ private struct MenuBarChildDropDelegate: DropDelegate {
 
 private struct ChildActionEditor: View {
     @Binding var child: MenuBarItem
+    /// Manipulators offered by the "Run Manipulator" action kind.
+    var manipulators: [Manipulator] = []
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
@@ -891,7 +910,7 @@ private struct ChildActionEditor: View {
             }
 
             if currentAction(side: side).kind != .none {
-                childActionParameters(action: actionBinding(side: side))
+                childActionParameters(action: actionBinding(side: side), manipulators: manipulators)
                     .padding(.leading, 0)
             }
         }
@@ -945,7 +964,7 @@ private struct ChildActionEditor: View {
 // MARK: - Child action parameter fields
 
 @ViewBuilder
-private func childActionParameters(action: Binding<MenuBarItemAction>) -> some View {
+private func childActionParameters(action: Binding<MenuBarItemAction>, manipulators: [Manipulator] = []) -> some View {
     switch action.wrappedValue.kind {
     case .none, .showMenu:
         EmptyView()
@@ -1014,5 +1033,14 @@ private func childActionParameters(action: Binding<MenuBarItemAction>) -> some V
             .font(.caption.monospaced())
             .frame(minHeight: 60, maxHeight: 100)
             .border(.quaternary)
+    case .runManipulator:
+        Picker("Manipulator", selection: action.manipulatorID) {
+            Text("None").tag("")
+            ForEach(manipulators) { manipulator in
+                Text(manipulator.name.isEmpty ? "Untitled" : manipulator.name)
+                    .tag(manipulator.id.uuidString)
+            }
+        }
+        .labelsHidden()
     }
 }

@@ -159,6 +159,7 @@ final class RemapStore: ObservableObject {
     private var saveConfigTask: Task<Void, Never>?
     private var applyRemapsTask: Task<Void, Never>?
     private var saveMenuBarItemsTask: Task<Void, Never>?
+    private var saveCommandPalettesTask: Task<Void, Never>?
     /// When our own last profile save completed. The file watcher ignores
     /// change events at or before this date (our debounced saves echo back
     /// through kqueue and must not trigger a reload).
@@ -174,7 +175,15 @@ final class RemapStore: ObservableObject {
     private var saveManifestTask: Task<Void, Never>?
 
     static let appSupportURL: URL = {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        var url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Test serverability: NSHomeDirectory() ignores the HOME environment
+        // variable, so tests either set ANVIL_HOME (for direct exec) or embed
+        // ANVIL_OVERRIDE_HOME in a copy's Info.plist (for `open` launches).
+        let override = ProcessInfo.processInfo.environment["ANVIL_HOME"]
+            ?? (Bundle.main.object(forInfoDictionaryKey: "ANVIL_OVERRIDE_HOME") as? String)
+        if let redirect = override, !redirect.isEmpty {
+            url = URL(fileURLWithPath: redirect, isDirectory: true)
+        }
         return url.appendingPathComponent("Anvil")
     }()
 
@@ -223,13 +232,17 @@ final class RemapStore: ObservableObject {
         if let profileData = Self.loadProfileData(id: loadedActiveID) {
             self.manipulators = profileData.manipulators
             self.menuBarItems = profileData.menuBarItems
+            self.commandPalettes = profileData.commandPalettes
+            self.healBlankCommandPalettes()
         } else if daemonMode {
             // Fall back to the legacy config.json
             self.manipulators = Self.loadConfig() ?? []
             self.menuBarItems = []
+            self.commandPalettes = []
         } else {
             self.manipulators = []
             self.menuBarItems = MenuBarItem.defaults()
+            self.commandPalettes = CommandPalette.defaults()
         }
 
         if !daemonMode {
@@ -310,6 +323,7 @@ final class RemapStore: ObservableObject {
         saveConfigTask?.cancel()
         applyRemapsTask?.cancel()
         saveMenuBarItemsTask?.cancel()
+        saveCommandPalettesTask?.cancel()
         saveManifestTask?.cancel()
         // Cancel dispatch source synchronously in deinit
         configFileSource?.cancel()
@@ -325,6 +339,20 @@ final class RemapStore: ObservableObject {
         guard let id = selectedMenuBarItemID else { return nil }
         return menuBarItems.first { $0.id == id }
     }
+
+    // MARK: - Command Palettes
+
+    @Published var commandPalettes: [CommandPalette] = []
+    @Published var selectedCommandPaletteID: UUID?
+    @Published private(set) var isCapturingCommandPaletteHotkey = false
+
+    var selectedCommandPalette: CommandPalette? {
+        guard let id = selectedCommandPaletteID else { return nil }
+        return commandPalettes.first { $0.id == id }
+    }
+
+    private var capturingCommandPaletteID: UUID?
+    private var commandPaletteHotkeyMonitor: Any?
 
     // MARK: - Derived State
 
@@ -1305,6 +1333,190 @@ final class RemapStore: ObservableObject {
         saveMenuBarItemsImmediate()
     }
 
+    // MARK: - Command Palettes CRUD
+
+    func addCommandPalette(style: CommandPaletteStyle = .spotlight) {
+        let palette = CommandPalette(name: "New Palette", style: style)
+        commandPalettes.append(palette)
+        selectedCommandPaletteID = palette.id
+        saveCommandPalettesImmediate()
+    }
+
+    func duplicateCommandPalette(_ id: UUID) {
+        guard let source = commandPalettes.first(where: { $0.id == id }),
+              let index = commandPalettes.firstIndex(where: { $0.id == id }) else { return }
+        var copy = source
+        copy.id = UUID()
+        copy.name = source.name + " Copy"
+        copy.items = source.items.map { item in
+            var itemCopy = item
+            itemCopy.id = UUID()
+            return itemCopy
+        }
+        commandPalettes.insert(copy, at: index + 1)
+        selectedCommandPaletteID = copy.id
+        saveCommandPalettesImmediate()
+    }
+
+    func deleteCommandPalette(_ id: UUID) {
+        guard let index = commandPalettes.firstIndex(where: { $0.id == id }) else { return }
+        if selectedCommandPaletteID == id {
+            let next = [index + 1, index - 1].first { commandPalettes.indices.contains($0) }
+            selectedCommandPaletteID = next.map { commandPalettes[$0].id }
+        }
+        commandPalettes.remove(at: index)
+        saveCommandPalettesImmediate()
+    }
+
+    func updateCommandPalette(_ id: UUID, _ transform: (inout CommandPalette) -> Void) {
+        guard let index = commandPalettes.firstIndex(where: { $0.id == id }) else { return }
+        transform(&commandPalettes[index])
+        scheduleSaveCommandPalettes()
+    }
+
+    func updateSelectedCommandPalette(_ transform: (inout CommandPalette) -> Void) {
+        guard let id = selectedCommandPaletteID else { return }
+        updateCommandPalette(id, transform)
+    }
+
+    func toggleCommandPaletteEnabled(_ id: UUID) {
+        guard let index = commandPalettes.firstIndex(where: { $0.id == id }) else { return }
+        commandPalettes[index].isEnabled.toggle()
+        saveCommandPalettesImmediate()
+    }
+
+    func moveCommandPalette(from source: IndexSet, to destination: Int) {
+        commandPalettes.move(fromOffsets: source, toOffset: destination)
+        saveCommandPalettesImmediate()
+    }
+
+    // MARK: - Command Palette Items CRUD
+
+    func addCommandPaletteItem(to paletteID: UUID) {
+        guard let index = commandPalettes.firstIndex(where: { $0.id == paletteID }) else { return }
+        let item = CommandPaletteItem(name: "New Command")
+        commandPalettes[index].items.append(item)
+        saveCommandPalettesImmediate()
+        return
+    }
+
+    func duplicateCommandPaletteItem(_ itemID: UUID, in paletteID: UUID) {
+        guard let paletteIndex = commandPalettes.firstIndex(where: { $0.id == paletteID }),
+              let itemIndex = commandPalettes[paletteIndex].items.firstIndex(where: { $0.id == itemID })
+        else { return }
+        var copy = commandPalettes[paletteIndex].items[itemIndex]
+        copy.id = UUID()
+        copy.name += " Copy"
+        commandPalettes[paletteIndex].items.insert(copy, at: itemIndex + 1)
+        saveCommandPalettesImmediate()
+    }
+
+    func deleteCommandPaletteItem(_ itemID: UUID, from paletteID: UUID) {
+        guard let paletteIndex = commandPalettes.firstIndex(where: { $0.id == paletteID }) else { return }
+        commandPalettes[paletteIndex].items.removeAll { $0.id == itemID }
+        saveCommandPalettesImmediate()
+    }
+
+    func updateCommandPaletteItem(_ itemID: UUID, in paletteID: UUID, _ transform: (inout CommandPaletteItem) -> Void) {
+        guard let paletteIndex = commandPalettes.firstIndex(where: { $0.id == paletteID }),
+              let itemIndex = commandPalettes[paletteIndex].items.firstIndex(where: { $0.id == itemID })
+        else { return }
+        transform(&commandPalettes[paletteIndex].items[itemIndex])
+        scheduleSaveCommandPalettes()
+    }
+
+    func moveCommandPaletteItems(from source: IndexSet, to destination: Int, in paletteID: UUID) {
+        guard let paletteIndex = commandPalettes.firstIndex(where: { $0.id == paletteID }) else { return }
+        commandPalettes[paletteIndex].items.move(fromOffsets: source, toOffset: destination)
+        saveCommandPalettesImmediate()
+    }
+
+    // MARK: - Command Palette Execution
+
+    /// Run a command palette item's action.
+    func executeCommandPaletteAction(_ action: CommandPaletteAction) {
+        action.execute(store: self)
+    }
+
+    /// Run a palette action, optionally passing files dropped on a shelf palette
+    /// to the action: shell commands get the quoted paths appended, and
+    /// app-launch actions open the app with the files. Other kinds run as-is.
+    func executeCommandPaletteAction(_ action: CommandPaletteAction, shelfFiles files: [URL]) {
+        guard !files.isEmpty else {
+            action.execute(store: self)
+            return
+        }
+        let paths = files.map(\.path)
+        let quoted = paths.map { "\"\($0)\"" }.joined(separator: " ")
+
+        switch action.kind {
+        case .runShell where !action.shellCommand.isEmpty:
+            _ = runShellCommand(action.shellCommand + " " + quoted)
+        case .openApp where !action.appBundleID.isEmpty:
+            _ = runShellCommand("open -a \"\(action.appBundleID)\" \(quoted)")
+        case .openApp:
+            _ = runShellCommand("open \(quoted)")
+        default:
+            action.execute(store: self)
+        }
+    }
+
+    /// Run a manipulator (macro) by ID — used by the "Run Manipulator" action.
+    func runManipulatorByID(_ id: UUID) {
+        guard let manipulator = manipulators.first(where: { $0.id == id }) else { return }
+        executeManipulatorFromPalette(manipulator)
+    }
+
+    /// Present a command palette.
+    func showCommandPalette(_ id: UUID) {
+        guard let palette = commandPalettes.first(where: { $0.id == id }) else { return }
+        CommandPaletteController.shared.show(palette)
+    }
+
+    /// Toggle a command palette open/closed.
+    func toggleCommandPalette(_ id: UUID) {
+        guard let palette = commandPalettes.first(where: { $0.id == id }) else { return }
+        CommandPaletteController.shared.toggle(palette)
+    }
+
+    // MARK: - Command Palette Hotkey Capture
+
+    /// Start capturing a global hotkey for the given palette.
+    func startCommandPaletteHotkeyCapture(for paletteID: UUID) {
+        stopCommandPaletteHotkeyCapture()
+        isCapturingCommandPaletteHotkey = true
+        capturingCommandPaletteID = paletteID
+        commandPaletteHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            return self.handleCommandPaletteHotkeyCapture(event)
+        }
+    }
+
+    /// Stop capturing a global hotkey.
+    func stopCommandPaletteHotkeyCapture() {
+        if let monitor = commandPaletteHotkeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            commandPaletteHotkeyMonitor = nil
+        }
+        isCapturingCommandPaletteHotkey = false
+        capturingCommandPaletteID = nil
+    }
+
+    private func handleCommandPaletteHotkeyCapture(_ event: NSEvent) -> NSEvent? {
+        // Swallow modifier changes while capturing so the combo isn't typed into the app.
+        if event.type == .flagsChanged { return nil }
+        let keyID = keyID(from: event)
+        guard !KeyboardKeyCodeMap.isModifierKeyID(keyID) else { return nil }
+        let modifiers = modifiers(from: event.modifierFlags)
+        if let paletteID = capturingCommandPaletteID {
+            updateCommandPalette(paletteID) { palette in
+                palette.hotkey = KeyShortcut(mandatoryModifiers: modifiers, key: keyID)
+            }
+        }
+        stopCommandPaletteHotkeyCapture()
+        return nil
+    }
+
     // MARK: - Menu Bar Action Execution
 
     func executeMenuBarAction(_ action: MenuBarItemAction) {
@@ -1395,6 +1607,7 @@ final class RemapStore: ObservableObject {
         activeProfileID = profile.id
         manipulators = []
         menuBarItems = MenuBarItem.defaults()
+        commandPalettes = []
         selectedManipulatorID = nil
         saveProfilesManifest()
         saveConfig()
@@ -1415,10 +1628,13 @@ final class RemapStore: ObservableObject {
         if let loaded = Self.loadProfileData(id: id) {
             manipulators = loaded.manipulators
             menuBarItems = loaded.menuBarItems
+            commandPalettes = loaded.commandPalettes
+            healBlankCommandPalettes()
         } else {
             // Profile file doesn't exist yet
             manipulators = []
             menuBarItems = MenuBarItem.defaults()
+            commandPalettes = []
         }
         selectedManipulatorID = manipulators.first?.id
         mirrorToConfigJSON()
@@ -1490,9 +1706,12 @@ final class RemapStore: ObservableObject {
                 if let loaded = Self.loadProfileData(id: first.id) {
                     manipulators = loaded.manipulators
                     menuBarItems = loaded.menuBarItems
+                    commandPalettes = loaded.commandPalettes
+                    healBlankCommandPalettes()
                 } else {
                     manipulators = []
                     menuBarItems = MenuBarItem.defaults()
+                    commandPalettes = []
                 }
                 selectedManipulatorID = manipulators.first?.id
                 applyRemaps()
@@ -1563,12 +1782,32 @@ final class RemapStore: ObservableObject {
         if let manipulators = try? JSONDecoder().decode([Manipulator].self, from: data) {
             return ProfileData(manipulators: manipulators, menuBarItems: MenuBarItem.defaults())
         }
+        // Surface the failure instead of silently falling back to defaults.
+        if let error = decodeError(data: data) {
+            NSLog("Anvil: could not read profile %@: %@", id.uuidString, error)
+            // Preserve the unreadable file so the following defaults fallback
+            // and save never destroy the user's data for good.
+            let backup = url.deletingPathExtension().appendingPathExtension(
+                "corrupt-\(Int(Date().timeIntervalSince1970)).bak"
+            )
+            try? FileManager.default.copyItem(at: url, to: backup)
+        }
         return nil
+    }
+
+    /// Describes why a profile file could not be decoded (for logging).
+    private static func decodeError(data: Data) -> String? {
+        do {
+            _ = try JSONDecoder().decode(ProfileData.self, from: data)
+            return nil
+        } catch {
+            return String(describing: error)
+        }
     }
 
     // MARK: - Config persistence
 
-    /// Save manipulators and menu bar items to the active profile's dedicated file.
+    /// Save manipulators, menu bar items and command palettes to the active profile's dedicated file.
     /// Encodes off the main actor and writes compact JSON (no pretty-print) so
     /// per-edit saves stay cheap. Pretty-printing is only for explicit export.
     func saveConfig() {
@@ -1584,7 +1823,11 @@ final class RemapStore: ObservableObject {
 
     private func scheduleSaveConfig() {
         saveConfigTask?.cancel()
-        let profileData = ProfileData(manipulators: manipulators, menuBarItems: menuBarItems)
+        let profileData = ProfileData(
+            manipulators: manipulators,
+            menuBarItems: menuBarItems,
+            commandPalettes: commandPalettes
+        )
         // Encode now, at schedule time: the bytes we are about to write define
         // exactly which file events count as our own echoes.
         guard let encodedData = try? JSONEncoder().encode(profileData) else { return }
@@ -1627,6 +1870,37 @@ final class RemapStore: ObservableObject {
             // Save menu bar items into the active profile (already debounced upstream)
             self.scheduleSaveConfig()
         }
+    }
+
+    // MARK: - Command Palettes Persistence
+
+    /// Restores starter palettes when a profile loads with none at all. A blank
+    /// palette list on disk is almost always a wiped or hand-edited file rather
+    /// than intent, so first launch recovers to the Spotlight + Drop Shelf
+    /// defaults; deliberate resets (new profile) bypass this.
+    private func healBlankCommandPalettes() {
+        guard commandPalettes.isEmpty else { return }
+        commandPalettes = CommandPalette.defaults()
+        saveCommandPalettes()
+    }
+
+    /// Persist command palette changes (debounced — avoids disk I/O on every keystroke).
+    func saveCommandPalettes() {
+        scheduleSaveCommandPalettes()
+    }
+
+    private func scheduleSaveCommandPalettes() {
+        saveCommandPalettesTask?.cancel()
+        saveCommandPalettesTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000) // 300ms debounce
+            guard let self, !Task.isCancelled else { return }
+            self.saveConfig()
+        }
+    }
+
+    /// Immediately persist command palettes to the active profile file.
+    private func saveCommandPalettesImmediate() {
+        saveConfig()
     }
 
     static func loadConfig() -> [Manipulator]? {
@@ -1713,7 +1987,9 @@ final class RemapStore: ObservableObject {
                 if mod <= self.lastOwnSaveDate { return }
                 if let loaded = Self.loadProfileData(id: self.activeProfileID) {
                     // Skip no-op reloads so unrelated refreshes never disturb edits.
-                    guard loaded.manipulators != self.manipulators || loaded.menuBarItems != self.menuBarItems else { return }
+                    guard loaded.manipulators != self.manipulators
+                        || loaded.menuBarItems != self.menuBarItems
+                        || loaded.commandPalettes != self.commandPalettes else { return }
                     // If the local state has diverged from what we last wrote
                     // (someone typed, or another instance wrote a stale copy),
                     // our state wins: re-assert it to disk instead of letting
@@ -1725,6 +2001,8 @@ final class RemapStore: ObservableObject {
                     }
                     self.manipulators = loaded.manipulators
                     self.menuBarItems = loaded.menuBarItems
+                    self.commandPalettes = loaded.commandPalettes
+                    self.healBlankCommandPalettes()
                     self.lastWrittenManipulators = loaded.manipulators
                     self.lastWrittenConfigData = fileData
                     self.objectWillChange.send()
@@ -2870,7 +3148,10 @@ final class RemapStore: ObservableObject {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    private func keyID(from event: NSEvent) -> String {
+    // MARK: - Helpers
+
+    /// Maps an event to the app's canonical key identifier (e.g. "space", "a").
+    func keyID(from event: NSEvent) -> String {
         if let keyID = KeyboardKeyCodeMap.id(for: CGKeyCode(event.keyCode)) {
             return keyID
         }
@@ -2899,7 +3180,8 @@ final class RemapStore: ObservableObject {
         return KeyShortcut(mandatoryModifiers: modifiers, key: keyID)
     }
 
-    private func modifiers(from flags: NSEvent.ModifierFlags) -> Set<ModifierKey> {
+    /// Maps event modifier flags to the app's modifier set.
+    func modifiers(from flags: NSEvent.ModifierFlags) -> Set<ModifierKey> {
         var modifiers: Set<ModifierKey> = []
         if flags.contains(.command) { modifiers.insert(.command) }
         if flags.contains(.shift) { modifiers.insert(.shift) }
